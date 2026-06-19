@@ -165,6 +165,30 @@ postman/           # Postman collection
 config.example.json
 ```
 
+## Project Status & Roadmap
+
+### What this project already has (Done)
+- [x] **OpenAI-Compatible completions API** (`/v1/chat/completions`) with full SSE streaming and non-streaming support.
+- [x] **Dynamic model resolution** (`/v1/models`) fetching enabled models directly from Notion and mapping aliases (`opus-4.8`, `gpt-4o`, `sonnet-4.6`).
+- [x] **Auto-Bootstrap account init** from raw browser cookie strings directly on start.
+- [x] **State-aware NDJSON patch parser** which correctly resolves nested block paths to prevent text corruption/merges.
+- [x] **Stream buffering & cleaning** to strip model preambles ("I'm ready to write this...") without slicing into the actual response.
+- [x] **`patch-sync` event parsing** to support models like `opus-4.8` without 502/empty errors.
+- [x] **Chrome TLS Impersonation** (via `curl_cffi`) and Windows event loop fixes for high stability.
+- [x] **Experimental Tools Compiler** for mapping Cursor Agent commands (`Shell`, `Write`) to Notion prose blocks and back.
+
+### Next Steps (Todo)
+- [ ] **Multi-Cookie/Account rotation pool** to load-balance requests across multiple Notion accounts.
+- [ ] **Auto-refresh cookie session** by simulating background navigation.
+- [ ] **Multimodal support** (images/assets) mapped to Notion's inline image attachment blocks.
+- [ ] **Interactive CLI setup wrapper** to guide users through cookie extraction and auto-configuration.
+- [ ] **Full Custom Agent configuration** via endpoint custom params or headers.
+- [ ] **Dockerization** — add a simple `Dockerfile` and `docker-compose.yml` to spin up the proxy server anywhere.
+- [ ] **Lightweight Dashboard (Web UI)** — add a `/admin` panel to monitor active threads, log history, and verify/refresh browser cookies in real-time.
+- [ ] **Multiple API keys management** instead of a single global `NOTIONCHAT_API_KEY`.
+- [ ] **Workspace Search mapping** — map file-search queries to Notion Workspace search to let Notion AI reference other docs in your workspace.
+- [ ] **Background service setup** — add convenience scripts to register NotionChat as a background daemon (Windows Service / systemd unit).
+
 ## Known limitations
 
 ### Tool calling / Cursor Agent — not fully working
