@@ -1,4 +1,4 @@
-# NotionChat
+# Notion AI to OpenAI Compatible
 
 OpenAI-compatible HTTP API that routes chat requests to **Notion AI** (`runInferenceTranscript`) using your Notion browser session.
 
@@ -253,3 +253,10 @@ This software is provided as-is. Using browser session cookies to access Notion'
 ## License
 
 [MIT](LICENSE)
+
+## Support
+
+If you find this project useful, consider supporting its development:
+
+[![Traktir Kopi](https://img.shields.io/badge/%F0%9F%8D%B5%20Traktir%20Kopi-MuGhu-orange)](https://traktir.mughu.id/)
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-blue?logo=paypal)](https://paypal.me/captainredz?locale.x=en_US&country.x=ID)
