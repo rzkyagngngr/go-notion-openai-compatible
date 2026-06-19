@@ -214,15 +214,18 @@ class NotionAIClient:
         *,
         on_delta: Callable[[str], None] | None = None,
     ) -> None:
-        last_len = 0
+        last_emitted_clean = ""
         try:
             async for line in resp.aiter_lines():
                 if isinstance(line, bytes):
                     line = line.decode("utf-8", errors="replace")
                 parser.feed_line(line)
-                if on_delta and len(parser.text) > last_len:
-                    on_delta(parser.text[last_len:])
-                    last_len = len(parser.text)
+                if on_delta:
+                    cleaned = clean_notion_output_text(parser.text)
+                    if cleaned and len(cleaned) > len(last_emitted_clean):
+                        delta = cleaned[len(last_emitted_clean) :]
+                        on_delta(delta)
+                        last_emitted_clean = cleaned
         finally:
             await _safe_close_response(resp)
 
@@ -343,13 +346,8 @@ class NotionAIClient:
                         line = line.decode("utf-8", errors="replace")
                     parser.feed_line(line)
                     cleaned = clean_notion_output_text(parser.text)
-                    if not cleaned:
-                        continue
-                    if cleaned.startswith(last_emitted_clean):
+                    if cleaned and len(cleaned) > len(last_emitted_clean):
                         delta = cleaned[len(last_emitted_clean) :]
-                    else:
-                        delta = cleaned
-                    if delta:
                         await queue.put(delta)
                         last_emitted_clean = cleaned
             except BaseException as e:

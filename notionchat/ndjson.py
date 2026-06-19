@@ -433,14 +433,17 @@ class NDJSONStreamParser:
             if o == "x":
                 self.thinking += v
             elif o == "p":
-                self.thinking = v if len(v) >= len(self.thinking) else self.thinking
+                self.thinking = v
             return
         if entry_type != "text":
             return
         if o == "x":
             self.text += v
         elif o == "p":
-            self.text = v if len(v) >= len(self.text) else self.text
+            # Always replace: Notion uses "p" to set the current accumulated text.
+            # Using length comparison causes corruption when Notion sends a shorter
+            # replacement (e.g., during streaming corrections) followed by appends.
+            self.text = v
 
     def _classify_content_path(self, path: str) -> str:
         idx = path.rfind("/content")
