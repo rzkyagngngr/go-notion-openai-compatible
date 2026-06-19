@@ -148,12 +148,14 @@ def _strip_meta_reasoning(text: str) -> str:
         if candidate:
             return candidate
 
-    # Find the last occurrence of any meta-reasoning marker; the real content
-    # typically starts right after that marker ends.
-    lower = stripped.lower()
+    # Find the last occurrence of any meta-reasoning marker. We only search
+    # in the first 1000 characters to prevent matching legitimate article content
+    # (like "ready to write" or "respond") that appears later in a long text.
+    head = stripped[:1000]
+    lower_head = head.lower()
     last_marker_end = -1
     for marker in _META_REASONING_MARKERS:
-        idx = lower.rfind(marker)
+        idx = lower_head.rfind(marker)
         if idx >= 0:
             last_marker_end = max(last_marker_end, idx + len(marker))
 
@@ -161,12 +163,12 @@ def _strip_meta_reasoning(text: str) -> str:
     search_start = last_marker_end if last_marker_end >= 0 else 0
     tail = stripped[search_start:]
 
-    # Find the first sentence boundary: period followed by uppercase letter
-    # (with or without whitespace). This handles patterns like:
-    #   "...conversation.Pernahkah kamu..." (no space)
-    #   "...now. Cursor sudah..." (with space)
-    #   "...concisely. I have got..." (with space)
-    match = re.search(r"\.\s*(?=[A-Z])", tail)
+    # Find the first sentence boundary within the first 10 characters of tail.
+    # The boundary is a period followed by whitespace and a capital letter, or
+    # a period directly followed by an uppercase letter (e.g. "...conversation.Pernahkah...").
+    # We restrict this to tail[:10] so we don't accidentally match legitimate
+    # sentence boundaries further down in the article.
+    match = re.search(r"\.\s*(?=[A-Z])", tail[:10])
     if match:
         start = search_start + match.end()
         candidate = stripped[start:].strip()
@@ -228,8 +230,9 @@ def _is_int(value: Any) -> bool:
 
 class NDJSONStreamParser:
     def __init__(self) -> None:
-        self.text = ""
-        self.thinking = ""
+        self._stored_text = ""
+        self._stored_thinking = ""
+        self._block_contents: dict[str, str] = {}
         self.input_tokens = 0
         self.output_tokens = 0
         self.notion_model: str | None = None
@@ -240,6 +243,42 @@ class NDJSONStreamParser:
         self._value_counts: dict[str, int] = {}
         self._section_count = 0
         self._tool_use_state: dict[str, dict[str, Any]] = {}
+
+    @property
+    def text(self) -> str:
+        if self._block_contents:
+            parts = []
+            for s_idx in range(self._section_count):
+                prefix = f"/s/{s_idx}"
+                count = self._value_counts.get(prefix, 0)
+                for v_idx in range(count):
+                    path = f"{prefix}/value/{v_idx}"
+                    if self._value_types.get(path) == "text":
+                        parts.append(self._block_contents.get(path, ""))
+            return "".join(parts)
+        return self._stored_text
+
+    @text.setter
+    def text(self, value: str) -> None:
+        self._stored_text = value
+
+    @property
+    def thinking(self) -> str:
+        if self._block_contents:
+            parts = []
+            for s_idx in range(self._section_count):
+                prefix = f"/s/{s_idx}"
+                count = self._value_counts.get(prefix, 0)
+                for v_idx in range(count):
+                    path = f"{prefix}/value/{v_idx}"
+                    if self._value_types.get(path) == "thinking":
+                        parts.append(self._block_contents.get(path, ""))
+            return "".join(parts)
+        return self._stored_thinking
+
+    @thinking.setter
+    def thinking(self, value: str) -> None:
+        self._stored_thinking = value
 
     def feed_line(self, line: str) -> None:
         line = line.strip()
@@ -364,8 +403,10 @@ class NDJSONStreamParser:
                     if entry.get("type") == "error":
                         self._raise_inference_error(entry)
             self._section_count = len(s)
-            for i, _ in enumerate(s):
+            for i, sec in enumerate(s):
                 self._value_counts.setdefault(f"/s/{i}", 0)
+                if isinstance(sec, dict):
+                    self._absorb_inline_section(i, sec)
 
     def _handle_patch(self, event: dict[str, Any]) -> None:
         ops = event.get("v")
@@ -400,11 +441,8 @@ class NDJSONStreamParser:
             if entry_type == "tool_use":
                 self._register_tool_use(entry_path, v)
                 return
-            if isinstance(content, str) and content:
-                if entry_type == "text":
-                    self.text += content
-                elif entry_type == "thinking":
-                    self.thinking += content
+            if entry_type in ("text", "thinking"):
+                self._block_contents[entry_path] = content or ""
             return
 
         if o in ("a", "x", "p") and p.endswith("/name") and isinstance(v, str):
@@ -440,21 +478,23 @@ class NDJSONStreamParser:
         entry_type = self._classify_content_path(p)
         if entry_type == "tool_use":
             return
+
+        # Find the block path (parent of /content)
+        idx = p.rfind("/content")
+        block_path = p[:idx] if idx >= 0 else p
+
         if entry_type == "thinking":
             if o == "x":
-                self.thinking += v
+                self._block_contents[block_path] = self._block_contents.get(block_path, "") + v
             elif o == "p":
-                self.thinking = v
+                self._block_contents[block_path] = v
             return
         if entry_type != "text":
             return
         if o == "x":
-            self.text += v
+            self._block_contents[block_path] = self._block_contents.get(block_path, "") + v
         elif o == "p":
-            # Always replace: Notion uses "p" to set the current accumulated text.
-            # Using length comparison causes corruption when Notion sends a shorter
-            # replacement (e.g., during streaming corrections) followed by appends.
-            self.text = v
+            self._block_contents[block_path] = v
 
     def _classify_content_path(self, path: str) -> str:
         idx = path.rfind("/content")
@@ -482,12 +522,9 @@ class NDJSONStreamParser:
             if etype == "tool_use":
                 self._register_tool_use(entry_path, entry)
                 continue
-            content = entry.get("content")
-            if isinstance(content, str) and content:
-                if etype == "text":
-                    self.text += content
-                elif etype == "thinking":
-                    self.thinking += content
+            content = entry.get("content") or ""
+            if etype in ("text", "thinking"):
+                self._block_contents[entry_path] = content
         self._value_counts[section_prefix] = len(values)
 
     def _extract_step_text(self, step: dict[str, Any]) -> str | None:

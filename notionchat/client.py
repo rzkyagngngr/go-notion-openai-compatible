@@ -215,17 +215,36 @@ class NotionAIClient:
         on_delta: Callable[[str], None] | None = None,
     ) -> None:
         last_emitted_clean = ""
+        has_released_buffer = False
         try:
             async for line in resp.aiter_lines():
                 if isinstance(line, bytes):
                     line = line.decode("utf-8", errors="replace")
                 parser.feed_line(line)
                 if on_delta:
+                    if not has_released_buffer:
+                        text = parser.text
+                        should_release = (
+                            len(text) >= 500
+                            or "\n\n" in text
+                            or "\n#" in text
+                            or text.startswith("#")
+                        )
+                        if not should_release:
+                            continue
+                        has_released_buffer = True
+
                     cleaned = clean_notion_output_text(parser.text)
                     if cleaned and len(cleaned) > len(last_emitted_clean):
                         delta = cleaned[len(last_emitted_clean) :]
                         on_delta(delta)
                         last_emitted_clean = cleaned
+
+            if on_delta and not has_released_buffer and parser.text:
+                cleaned = clean_notion_output_text(parser.text)
+                if cleaned and len(cleaned) > len(last_emitted_clean):
+                    delta = cleaned[len(last_emitted_clean) :]
+                    on_delta(delta)
         finally:
             await _safe_close_response(resp)
 
@@ -336,6 +355,7 @@ class NotionAIClient:
 
         async def producer() -> None:
             nonlocal last_emitted_clean
+            has_released_buffer = False
             resp = None
             try:
                 resp = await client.post_stream(url, json=body, headers=headers)
@@ -345,11 +365,30 @@ class NotionAIClient:
                     if isinstance(line, bytes):
                         line = line.decode("utf-8", errors="replace")
                     parser.feed_line(line)
+
+                    if not has_released_buffer:
+                        text = parser.text
+                        should_release = (
+                            len(text) >= 500
+                            or "\n\n" in text
+                            or "\n#" in text
+                            or text.startswith("#")
+                        )
+                        if not should_release:
+                            continue
+                        has_released_buffer = True
+
                     cleaned = clean_notion_output_text(parser.text)
                     if cleaned and len(cleaned) > len(last_emitted_clean):
                         delta = cleaned[len(last_emitted_clean) :]
                         await queue.put(delta)
                         last_emitted_clean = cleaned
+
+                if not has_released_buffer and parser.text:
+                    cleaned = clean_notion_output_text(parser.text)
+                    if cleaned and len(cleaned) > len(last_emitted_clean):
+                        delta = cleaned[len(last_emitted_clean) :]
+                        await queue.put(delta)
             except BaseException as e:
                 http_error.append(e)
             finally:
