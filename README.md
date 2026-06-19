@@ -4,6 +4,8 @@ OpenAI-compatible HTTP API that routes chat requests to **Notion AI** (`runInfer
 
 Use it with [Cursor](https://cursor.com), [9router](https://github.com), Postman, or any client that speaks the OpenAI Chat Completions API.
 
+> **Educational Purpose Only** — This project is intended for learning and research purposes only. It is not affiliated with, endorsed by, or officially supported by Notion. Do not use it to violate Notion's Terms of Service or to access paid features without a valid subscription.
+
 > **Unofficial project.** Not affiliated with or endorsed by Notion. You are responsible for complying with Notion's terms of service and your workspace plan limits.
 
 ## Features
