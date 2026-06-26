@@ -44,7 +44,7 @@ func BuildConfigValue(notionModel string, isSubsequent, ideAgentMode bool) map[s
 		"enableMailNotificationPreferences": false, "enableMailAgentMultiProviderSupport": false,
 		"useRulePrioritization": true, "availableConnectors": []any{},
 		"customConnectorInfo": []any{}, "searchScopes": []any{map[string]string{"type": "everything"}},
-		"useWebSearch": true, "isHipaa": false, "internetAccess": true,
+		"useWebSearch": true, "isHipaa": false, "internetAccess": false,
 		"useReadOnlyMode": false, "writerMode": false, "isCustomAgent": false,
 		"model": notionModel, "isCustomAgentBuilder": false, "isAgentResearchRequest": false,
 		"useCustomAgentDraft": false, "use_draft_actor_pointer": false,
@@ -58,6 +58,9 @@ func BuildConfigValue(notionModel string, isSubsequent, ideAgentMode bool) map[s
 		cfg["useWebSearch"] = false
 		cfg["enableAgentThreadTools"] = false
 		cfg["searchScopes"] = []any{map[string]string{"type": "workspace"}}
+	} else {
+		cfg["useWebSearch"] = false
+		cfg["searchScopes"] = []any{}
 	}
 	if isSubsequent {
 		cfg["isThreadStartedByAdmin"] = true
@@ -69,8 +72,12 @@ func BuildContextValue(acc *account.NotionAccount, currentDatetime string) map[s
 	if currentDatetime == "" {
 		currentDatetime = NowISO(acc.Timezone)
 	}
+	userName := acc.UserName
+	if userName == "" {
+		userName = acc.UserEmail
+	}
 	return map[string]any{
-		"timezone": acc.Timezone, "userName": acc.UserName, "userId": acc.UserID,
+		"timezone": acc.Timezone, "userName": userName, "userId": acc.UserID,
 		"userEmail": acc.UserEmail, "spaceName": acc.SpaceName, "spaceId": acc.SpaceID,
 		"spaceViewId": acc.SpaceViewID, "currentDatetime": currentDatetime, "surface": "ai_module",
 	}

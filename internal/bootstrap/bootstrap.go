@@ -125,7 +125,7 @@ func accountFromLoadUserContent(
 	if spaceName != nil && *spaceName != "" {
 		found := false
 		for _, w := range workspaces {
-			if strings.EqualFold(w.SpaceName, *spaceName) {
+			if strings.EqualFold(w.SpaceID, *spaceName) || strings.EqualFold(w.SpaceName, *spaceName) {
 				chosen = w
 				found = true
 				break

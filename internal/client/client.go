@@ -38,7 +38,6 @@ func BuildHeaders(acc *account.NotionAccount, accept string) map[string]string {
 	}
 	return map[string]string{
 		"accept":                      accept,
-		"accept-encoding":             "identity",
 		"accept-language":             "en-US,en;q=0.9",
 		"content-type":                "application/json",
 		"notion-audit-log-platform":   "web",
@@ -231,7 +230,12 @@ func (c *NotionAIClient) runInference(
 	lastEmitted := ""
 	hasReleased := false
 
+	loggedFirstLine := false
 	err = notionhttp.ReadLines(bodyReader, func(line string) error {
+		if !loggedFirstLine {
+			loggedFirstLine = true
+			log.Printf("Notion stream first line (%d bytes): %q", len(line), truncateForLog(line, 240))
+		}
 		if err := parser.FeedLine(line); err != nil {
 			return err
 		}
