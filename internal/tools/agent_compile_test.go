@@ -87,6 +87,31 @@ func TestSanitizeMCPToolToShell(t *testing.T) {
 	}
 }
 
+func TestShouldExploreBootstrapSkipsAfterListing(t *testing.T) {
+	listing := strings.Repeat("src/main.go\n", 8)
+	msgs := []ChatMessage{
+		{Role: "user", Content: "analisa codebase"},
+		{Role: "tool", Content: listing, Name: "shell_command"},
+	}
+	if ShouldExploreBootstrap(msgs) {
+		t.Fatal("should not bootstrap after directory listing")
+	}
+	if calls := PreemptiveAgentToolCalls(msgs, CodexFallbackTools()); len(calls) != 0 {
+		t.Fatalf("expected no preemptive calls, got %v", ToolCallNames(calls))
+	}
+}
+
+func TestSanitizeDropsRepeatListAfterListing(t *testing.T) {
+	msgs := []ChatMessage{
+		{Role: "user", Content: "analisa codebase"},
+		{Role: "tool", Content: strings.Repeat("file.go\n", 10), Name: "shell_command"},
+	}
+	in := []map[string]any{makeToolCall("shell_command", map[string]any{"command": "Get-ChildItem -Force"})}
+	if out := SanitizeExploreToolCalls(msgs, in, CodexFallbackTools()); len(out) != 0 {
+		t.Fatalf("expected duplicate list commands dropped, got %v", ToolCallNames(out))
+	}
+}
+
 func TestPreemptiveRetriesAfterEmptyMCPResult(t *testing.T) {
 	msgs := []ChatMessage{
 		{Role: "user", Content: "analisa codebase"},

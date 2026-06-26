@@ -25,6 +25,7 @@ type Server struct {
 	credentials    *credentials.Store
 	sessionThreads map[string]string
 	sessionModels  map[string]string
+	exploreDone    map[string]bool
 	mu             sync.Mutex
 }
 
@@ -34,7 +35,27 @@ func NewServer(settings *config.Settings, creds *credentials.Store) *Server {
 		credentials:    creds,
 		sessionThreads: make(map[string]string),
 		sessionModels:  make(map[string]string),
+		exploreDone:    make(map[string]bool),
 	}
+}
+
+func (s *Server) exploreKey(user, sessionKey string) string {
+	if u := strings.TrimSpace(user); u != "" {
+		return "explore:" + u
+	}
+	return "explore:" + sessionKey
+}
+
+func (s *Server) exploreAlreadyDone(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exploreDone[key]
+}
+
+func (s *Server) markExploreDone(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.exploreDone[key] = true
 }
 
 func (s *Server) Handler() http.Handler {
@@ -207,15 +228,21 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	s.ensureModelAliases(c, settings)
 
 	if toolsActive {
-		if preempt := tools.PreemptiveAgentToolCalls(req.Messages, normalizedTools); len(preempt) > 0 {
-			preempt = tools.SanitizeExploreToolCalls(req.Messages, preempt, normalizedTools)
-			log.Printf("preemptive tool_calls=%v", tools.ToolCallNames(preempt))
-			if useStream {
-				s.streamToolCalls(w, &req, preempt)
-				return
+		exploreKey := s.exploreKey(req.User, sessionKey)
+		if !s.exploreAlreadyDone(exploreKey) {
+			if preempt := tools.PreemptiveAgentToolCalls(req.Messages, normalizedTools); len(preempt) > 0 {
+				preempt = tools.SanitizeExploreToolCalls(req.Messages, preempt, normalizedTools)
+				if len(preempt) > 0 {
+					s.markExploreDone(exploreKey)
+					log.Printf("preemptive tool_calls=%v explore_key=%q", tools.ToolCallNames(preempt), exploreKey)
+					if useStream {
+						s.streamToolCalls(w, &req, preempt)
+						return
+					}
+					s.writeToolCallCompletion(w, &req, preempt)
+					return
+				}
 			}
-			s.writeToolCallCompletion(w, &req, preempt)
-			return
 		}
 	}
 
@@ -319,10 +346,24 @@ func (s *Server) streamResponse(
 	}
 
 	if result != nil && len(result.ToolCalls) > 0 {
-		emitToolCallChunks(w, flusher, completionID, created, req.Model, result.ToolCalls)
+		result.ToolCalls = tools.SanitizeExploreToolCalls(req.Messages, result.ToolCalls, normalizedTools)
+		if len(result.ToolCalls) > 0 {
+			if tools.ExploreToolCallsIssued(result.ToolCalls) {
+				s.markExploreDone(s.exploreKey(req.User, sessionKey))
+			}
+			emitToolCallChunks(w, flusher, completionID, created, req.Model, result.ToolCalls)
+		} else {
+			writeChunk(w, completionID, created, req.Model, map[string]any{}, strPtr("stop"))
+		}
 	} else if toolsActive && tools.LooksLikeToolDenial(strings.Join(buffered, "")) {
-		if preempt := tools.PreemptiveAgentToolCalls(req.Messages, normalizedTools); len(preempt) > 0 {
-			emitToolCallChunks(w, flusher, completionID, created, req.Model, preempt)
+		exploreKey := s.exploreKey(req.User, sessionKey)
+		if !s.exploreAlreadyDone(exploreKey) {
+			if preempt := tools.SanitizeExploreToolCalls(req.Messages, tools.PreemptiveAgentToolCalls(req.Messages, normalizedTools), normalizedTools); len(preempt) > 0 {
+				s.markExploreDone(exploreKey)
+				emitToolCallChunks(w, flusher, completionID, created, req.Model, preempt)
+			} else {
+				writeChunk(w, completionID, created, req.Model, map[string]any{}, strPtr("stop"))
+			}
 		} else {
 			writeChunk(w, completionID, created, req.Model, map[string]any{}, strPtr("stop"))
 		}
@@ -360,6 +401,14 @@ func (s *Server) bridgeIDEResult(
 	}
 	text, toolCalls := tools.BridgeIDEAgentResponse(req.Messages, result.Text, result.ToolCalls, normalizedTools, prompt)
 	if len(toolCalls) > 0 {
+		toolCalls = tools.SanitizeExploreToolCalls(req.Messages, toolCalls, normalizedTools)
+		if len(toolCalls) == 0 {
+			denial := tools.LooksLikeToolDenial(result.Text)
+			if denial {
+				result.Text = ""
+			}
+			return result
+		}
 		result.Text = text
 		result.ToolCalls = toolCalls
 		return result

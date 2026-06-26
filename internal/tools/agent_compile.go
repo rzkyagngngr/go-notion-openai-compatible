@@ -305,12 +305,66 @@ func looksLikeExploreTask(text string) bool {
 	return false
 }
 
-func buildExploreToolCalls(messages []ChatMessage, clientTools []map[string]any) []map[string]any {
+func conversationHasDirectoryListing(messages []ChatMessage) bool {
+	for _, msg := range messages {
+		if msg.Role != "tool" {
+			continue
+		}
+		text := extractText(msg.Content)
+		if len(text) < 80 {
+			continue
+		}
+		if strings.Count(text, "\n") >= 5 {
+			return true
+		}
+		lower := strings.ToLower(text)
+		if strings.Contains(lower, "get-childitem") ||
+			strings.Contains(lower, "node_modules") ||
+			strings.Contains(lower, "directory of") ||
+			strings.Contains(lower, "<dir>") {
+			return true
+		}
+	}
+	return false
+}
+
+func isExploreListCommand(args map[string]any) bool {
+	cmd := strings.ToLower(strings.TrimSpace(stringVal(args["command"])))
+	if cmd == "" {
+		return false
+	}
+	return strings.Contains(cmd, "get-childitem") ||
+		strings.HasPrefix(cmd, "ls") ||
+		strings.Contains(cmd, "dir ") ||
+		strings.Contains(cmd, "list_dir")
+}
+
+func isListExploreToolCall(tc map[string]any) bool {
+	fn, _ := tc["function"].(map[string]any)
+	name := strings.ToLower(stringVal(fn["name"]))
+	if isMCPTool(name) || strings.Contains(name, "glob") || strings.Contains(name, "list_dir") {
+		return true
+	}
+	var args map[string]any
+	_ = json.Unmarshal([]byte(stringVal(fn["arguments"])), &args)
+	return isExploreListCommand(args)
+}
+
+// ShouldExploreBootstrap reports whether the client still needs an initial directory listing.
+func ShouldExploreBootstrap(messages []ChatMessage) bool {
+	if conversationHasDirectoryListing(messages) || conversationHasUsefulToolResults(messages) {
+		return false
+	}
 	request := ExtractLastUserMessage(messages)
-	if request == "" {
+	return request != "" && looksLikeExploreTask(request)
+}
+
+func buildExploreToolCalls(messages []ChatMessage, clientTools []map[string]any) []map[string]any {
+	if !ShouldExploreBootstrap(messages) {
 		return nil
 	}
-	if !looksLikeExploreTask(request) {
+	request := ExtractLastUserMessage(messages)
+	if request == "" {
 		return nil
 	}
 
@@ -370,6 +424,16 @@ func SanitizeExploreToolCalls(messages []ChatMessage, toolCalls []map[string]any
 	if len(toolCalls) == 0 {
 		return toolCalls
 	}
+	if conversationHasDirectoryListing(messages) {
+		var kept []map[string]any
+		for _, tc := range NormalizeToolCalls(toolCalls) {
+			if isListExploreToolCall(tc) {
+				continue
+			}
+			kept = append(kept, tc)
+		}
+		return kept
+	}
 	path := extractPathFromRequest(ExtractLastUserMessage(messages))
 	shellTool := pickShellTool(clientTools)
 	var out []map[string]any
@@ -417,10 +481,16 @@ func conversationHasUsefulToolResults(messages []ChatMessage) bool {
 // PreemptiveAgentToolCalls returns tool_calls before calling Notion when the client
 // still needs filesystem exploration (Codex first turn on analyze/list tasks).
 func PreemptiveAgentToolCalls(messages []ChatMessage, clientTools []map[string]any) []map[string]any {
-	if conversationHasUsefulToolResults(messages) {
-		return nil
-	}
 	return buildExploreToolCalls(messages, clientTools)
+}
+
+func ExploreToolCallsIssued(toolCalls []map[string]any) bool {
+	for _, tc := range NormalizeToolCalls(toolCalls) {
+		if isListExploreToolCall(tc) {
+			return true
+		}
+	}
+	return false
 }
 
 func bootstrapScaffoldToolCalls(messages []ChatMessage, notionText string, clientTools []map[string]any) []map[string]any {
