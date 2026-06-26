@@ -78,6 +78,36 @@ func BuildCookieFromParts(browserID, deviceID, userID, tokenV2 string) string {
 }
 
 func BuildCookieHeader(acc *NotionAccount) string {
+	if acc.TokenV2 == "" {
+		if acc.FullCookie != "" {
+			return acc.FullCookie
+		}
+		return ""
+	}
+	browserID := acc.BrowserID
+	deviceID := acc.DeviceID
+	userID := acc.UserID
+	token := acc.TokenV2
+	if acc.FullCookie != "" {
+		parsed := ParseBrowserCookie(acc.FullCookie)
+		if browserID == "" {
+			browserID = parsed["notion_browser_id"]
+		}
+		if deviceID == "" {
+			deviceID = parsed["device_id"]
+		}
+		if userID == "" {
+			userID = parsed["notion_user_id"]
+		}
+		if token == "" {
+			token = parsed["token_v2"]
+		}
+	}
+	// Rebuild when we know user_id — stale full_cookie often has empty notion_user_id
+	// which breaks runInferenceTranscript (Notion returns "[]" with no events).
+	if userID != "" && token != "" {
+		return BuildCookieFromParts(browserID, deviceID, userID, token)
+	}
 	if acc.FullCookie != "" {
 		return acc.FullCookie
 	}

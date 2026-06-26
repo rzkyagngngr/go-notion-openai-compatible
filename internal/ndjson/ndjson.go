@@ -38,7 +38,9 @@ type ParseResult struct {
 	OutputTokens     int
 	NotionModel      string
 	LineCount        int
+	JSONFailures     int
 	EventTypeCounts  map[string]int
+	SampleLines      []string
 	ToolCalls        []map[string]any
 }
 
@@ -193,7 +195,9 @@ func (p *StreamParser) Finalize() *ParseResult {
 		OutputTokens:    p.outputTokens,
 		NotionModel:     p.notionModel,
 		LineCount:       p.lineCount,
+		JSONFailures:    p.jsonFailures,
 		EventTypeCounts: copyCounts(p.eventTypeCounts),
+		SampleLines:     append([]string(nil), p.sampleLines...),
 		ToolCalls:       append([]map[string]any(nil), p.toolCalls...),
 	}
 }

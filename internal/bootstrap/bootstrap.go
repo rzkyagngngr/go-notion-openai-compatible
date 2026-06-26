@@ -149,9 +149,10 @@ func accountFromLoadUserContent(
 		), 400)
 	}
 
+	sanitizedCookie := account.BuildCookieFromParts(browserID, deviceID, userID, token)
 	return &account.NotionAccount{
 		TokenV2:       token,
-		FullCookie:    cookie,
+		FullCookie:    sanitizedCookie,
 		UserID:        userID,
 		UserName:      userName,
 		UserEmail:     userEmail,

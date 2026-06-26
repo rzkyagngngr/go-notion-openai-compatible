@@ -22,8 +22,22 @@ func TestBuildCookieHeader(t *testing.T) {
 		TokenV2: "tok", BrowserID: "br", DeviceID: "dev", UserID: "uid",
 	}
 	h := BuildCookieHeader(acc)
-	if !containsAll(h, "notion_browser_id=br", "token_v2=tok", "device_id=dev") {
+	if !containsAll(h, "notion_browser_id=br", "token_v2=tok", "device_id=dev", "notion_user_id=uid") {
 		t.Fatalf("cookie header: %q", h)
+	}
+}
+
+func TestBuildCookieHeaderRebuildsStaleFullCookie(t *testing.T) {
+	acc := &NotionAccount{
+		TokenV2:    "tok",
+		UserID:     "real-user",
+		BrowserID:  "br",
+		DeviceID:   "dev",
+		FullCookie: "notion_browser_id=br; device_id=; notion_user_id=; token_v2=tok",
+	}
+	h := BuildCookieHeader(acc)
+	if !containsAll(h, "notion_user_id=real-user", `notion_users=[%22real-user%22]`) {
+		t.Fatalf("expected rebuilt cookie with user id, got %q", h)
 	}
 }
 

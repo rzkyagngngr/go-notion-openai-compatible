@@ -161,6 +161,11 @@ func emptyResponseMessage(result *ndjson.ParseResult, threadID string) string {
 	if result.LineCount == 0 {
 		return "Notion returned no stream data. Check space_id and refresh your cookie via /config."
 	}
+	for _, sample := range result.SampleLines {
+		if strings.TrimSpace(sample) == "[]" {
+			return "Notion returned an empty inference stream. Reconnect at / — your cookie may be missing notion_user_id or token_v2 may have expired."
+		}
+	}
 	events := make([]string, 0, len(result.EventTypeCounts))
 	for k, v := range result.EventTypeCounts {
 		events = append(events, fmt.Sprintf("%s=%d", k, v))
