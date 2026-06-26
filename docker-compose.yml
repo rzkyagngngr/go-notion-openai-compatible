@@ -1,0 +1,19 @@
+services:
+  notionchat:
+    build: .
+    image: go-notion-openai-compatible:latest
+    container_name: notionchat
+    ports:
+      - "8787:8787"
+    environment:
+      NOTIONCHAT_HOST: "0.0.0.0"
+      NOTIONCHAT_PORT: "8787"
+      NOTIONCHAT_API_KEY: "${NOTIONCHAT_API_KEY:-sk-notionchat}"
+    volumes:
+      - notionchat-data:/app/data
+      - notionchat-threads:/app/threads
+    restart: unless-stopped
+
+volumes:
+  notionchat-data:
+  notionchat-threads:
