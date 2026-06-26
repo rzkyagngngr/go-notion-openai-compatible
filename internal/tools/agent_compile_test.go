@@ -156,6 +156,62 @@ func TestCompileAgentShellFence(t *testing.T) {
 	}
 }
 
+func TestFileReadDetectedWithoutPathInOutput(t *testing.T) {
+	source := "package main\n\nimport (\n\t\"fmt\"\n\t\"net/http\"\n)\n\nfunc main() {\n\thttp.ListenAndServe(\":8080\", nil)\n}\n"
+	msgs := []ChatMessage{
+		{Role: "user", Content: "analisa cmd\\server\\main.go"},
+		{Role: "assistant", ToolCalls: []map[string]any{{
+			"id": "call_1", "type": "function",
+			"function": map[string]any{
+				"name": "shell_command",
+				"arguments": `{"command":"Get-Content -Raw \"cmd\\server\\main.go\""}`,
+			},
+		}}},
+		{Role: "tool", Content: source, ToolCallID: "call_1", Name: "shell_command"},
+	}
+	if !conversationHasFileReadResult(msgs, "cmd\\server\\main.go") {
+		t.Fatal("expected file read detected from source code after read tool call")
+	}
+	if calls := PreemptiveAgentToolCalls(msgs, CodexFallbackTools()); len(calls) != 0 {
+		t.Fatalf("expected no preemptive read after successful read, got %v", ToolCallNames(calls))
+	}
+}
+
+func TestPreemptiveReadSkipsWhenAlreadyIssued(t *testing.T) {
+	msgs := []ChatMessage{{Role: "user", Content: "analisa cmd\\server\\main.go"}}
+	issued := func(path string) bool { return path == "cmd\\server\\main.go" }
+	if _, ok := shouldPreemptiveRead(msgs, issued); ok {
+		t.Fatal("expected preemptive read skipped when already issued server-side")
+	}
+}
+
+func TestCacheAndEnrichFileRead(t *testing.T) {
+	source := strings.Repeat("package main\nfunc main() {}\n", 10)
+	msgs := []ChatMessage{
+		{Role: "user", Content: "analisa cmd/server/main.go"},
+		{Role: "assistant", ToolCalls: []map[string]any{{
+			"id": "call_1", "type": "function",
+			"function": map[string]any{
+				"name": "shell_command",
+				"arguments": `{"command":"Get-Content -Raw cmd/server/main.go"}`,
+			},
+		}}},
+		{Role: "tool", Content: source, Name: "shell_command"},
+	}
+	cache := CacheFileReadsFromMessages(msgs)
+	if len(cache) == 0 {
+		t.Fatal("expected cached file read")
+	}
+	enriched := EnrichMessagesWithCachedRead(
+		[]ChatMessage{{Role: "user", Content: "analisa cmd/server/main.go"}},
+		"cmd/server/main.go",
+		source,
+	)
+	if len(enriched) < 3 {
+		t.Fatalf("expected enriched messages, got %d", len(enriched))
+	}
+}
+
 func TestSkipCodexBootstrapPrompt(t *testing.T) {
 	msgs := []ChatMessage{
 		{Role: "system", Content: "You are Codex CLI with terminal and filesystem access. Use tool_calls and run_terminal."},

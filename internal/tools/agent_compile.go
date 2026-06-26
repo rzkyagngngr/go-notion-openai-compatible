@@ -282,6 +282,10 @@ func synthesizeShellToolCalls(notionText string, clientTools []map[string]any) [
 }
 
 func extractFilePathFromRequest(request string) string {
+	return ExtractFilePathFromRequest(request)
+}
+
+func ExtractFilePathFromRequest(request string) string {
 	if m := filePathRe.FindString(strings.TrimSpace(request)); m != "" {
 		return strings.TrimPrefix(strings.Trim(m, `"'`), "@")
 	}
@@ -336,10 +340,115 @@ func buildReadToolCall(path string, clientTools []map[string]any, messages []Cha
 	return nil
 }
 
-func shouldPreemptiveRead(messages []ChatMessage) (string, bool) {
+func NormalizeFilePath(path string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(path), "\\", "/"))
+}
+
+func looksLikeSourceCode(text, path string) bool {
+	if len(text) < 80 {
+		return false
+	}
+	ext := ""
+	if dot := strings.LastIndex(path, "."); dot >= 0 {
+		ext = strings.ToLower(path[dot:])
+	}
+	switch ext {
+	case ".go":
+		return strings.Contains(text, "package ") &&
+			(strings.Contains(text, "func ") || strings.Contains(text, "import "))
+	case ".ts", ".tsx", ".js", ".jsx":
+		return strings.Contains(text, "import ") || strings.Contains(text, "export ") ||
+			strings.Contains(text, "function ") || strings.Contains(text, "const ")
+	case ".py":
+		return strings.Contains(text, "def ") || strings.Contains(text, "import ") ||
+			strings.Contains(text, "class ")
+	default:
+		if strings.Count(text, "\n") >= 8 {
+			return true
+		}
+		return strings.Contains(text, "func ") || strings.Contains(text, "package ") ||
+			strings.Contains(text, "class ") || strings.Contains(text, "import ")
+	}
+}
+
+func readPathFromToolCall(tc map[string]any) string {
+	fn, _ := tc["function"].(map[string]any)
+	name := strings.ToLower(stringVal(fn["name"]))
+	var args map[string]any
+	_ = json.Unmarshal([]byte(stringVal(fn["arguments"])), &args)
+	if args == nil {
+		return ""
+	}
+	switch {
+	case strings.Contains(name, "read"):
+		for _, key := range []string{"path", "file", "file_path", "uri"} {
+			if p := stringVal(args[key]); p != "" {
+				return p
+			}
+		}
+	case strings.Contains(name, "shell") || strings.Contains(name, "command"):
+		cmd := stringVal(args["command"])
+		if m := regexp.MustCompile(`(?i)(?:get-content\s+(?:-raw\s+)?|cat\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`).FindStringSubmatch(cmd); len(m) > 1 {
+			for i := 1; i < len(m); i++ {
+				if m[i] != "" {
+					return m[i]
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func isReadShellCommand(cmd string) bool {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	return strings.Contains(lower, "get-content") || strings.HasPrefix(lower, "cat ")
+}
+
+func isReadToolCall(tc map[string]any) bool {
+	fn, _ := tc["function"].(map[string]any)
+	name := strings.ToLower(stringVal(fn["name"]))
+	if strings.Contains(name, "read") && !isMCPTool(name) {
+		return true
+	}
+	var args map[string]any
+	_ = json.Unmarshal([]byte(stringVal(fn["arguments"])), &args)
+	if args == nil {
+		return false
+	}
+	return isReadShellCommand(stringVal(args["command"]))
+}
+
+func ReadToolCallsIssued(toolCalls []map[string]any) bool {
+	for _, tc := range NormalizeToolCalls(toolCalls) {
+		if isReadToolCall(tc) {
+			return true
+		}
+	}
+	return false
+}
+
+func ReadPathsFromToolCalls(toolCalls []map[string]any) []string {
+	seen := map[string]bool{}
+	var paths []string
+	for _, tc := range NormalizeToolCalls(toolCalls) {
+		if p := readPathFromToolCall(tc); p != "" {
+			n := NormalizeFilePath(p)
+			if !seen[n] {
+				seen[n] = true
+				paths = append(paths, p)
+			}
+		}
+	}
+	return paths
+}
+
+func shouldPreemptiveRead(messages []ChatMessage, readAlreadyIssued func(string) bool) (string, bool) {
 	request := ExtractLastUserMessage(messages)
 	file := extractFilePathFromRequest(request)
 	if file == "" || !looksLikeExploreTask(request) {
+		return "", false
+	}
+	if readAlreadyIssued != nil && readAlreadyIssued(file) {
 		return "", false
 	}
 	if conversationHasFileReadResult(messages, file) {
@@ -349,31 +458,89 @@ func shouldPreemptiveRead(messages []ChatMessage) (string, bool) {
 }
 
 func conversationHasFileReadResult(messages []ChatMessage, path string) bool {
-	needle := strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	needle := NormalizeFilePath(path)
 	base := needle
-	if idx := strings.LastIndexAny(needle, `/\`); idx >= 0 {
+	if idx := strings.LastIndex(needle, "/"); idx >= 0 {
 		base = needle[idx+1:]
 	}
+
+	pendingRead := false
 	for _, msg := range messages {
-		if msg.Role != "tool" {
-			continue
-		}
-		text := extractText(msg.Content)
-		if len(text) < 80 {
-			continue
-		}
-		lower := strings.ToLower(text)
-		mentionsPath := strings.Contains(lower, needle) || (base != "" && strings.Contains(lower, base))
-		if !mentionsPath {
-			continue
-		}
-		if strings.Contains(text, "{") || strings.Contains(text, "func ") ||
-			strings.Contains(text, "package ") || strings.Contains(text, "import ") ||
-			strings.Contains(text, "class ") || strings.Count(text, "\n") >= 5 {
-			return true
+		switch msg.Role {
+		case "assistant":
+			for _, tc := range msg.ToolCalls {
+				readPath := NormalizeFilePath(readPathFromToolCall(tc))
+				if readPath != "" && (readPath == needle || strings.HasSuffix(readPath, "/"+base) || readPath == base) {
+					pendingRead = true
+				}
+			}
+		case "tool":
+			text := extractText(msg.Content)
+			if pendingRead && looksLikeSourceCode(text, path) {
+				return true
+			}
+			lower := strings.ToLower(text)
+			mentionsPath := strings.Contains(lower, needle) || (base != "" && strings.Contains(lower, base))
+			if mentionsPath && looksLikeSourceCode(text, path) {
+				return true
+			}
+			pendingRead = false
 		}
 	}
 	return false
+}
+
+// CacheFileReadsFromMessages extracts file contents from tool results keyed by normalized path.
+func CacheFileReadsFromMessages(messages []ChatMessage) map[string]string {
+	out := map[string]string{}
+	var lastReadPath string
+	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			for _, tc := range msg.ToolCalls {
+				if p := readPathFromToolCall(tc); p != "" {
+					lastReadPath = p
+				}
+			}
+			continue
+		}
+		if msg.Role != "tool" || lastReadPath == "" {
+			continue
+		}
+		text := strings.TrimSpace(extractText(msg.Content))
+		if text == "" || isEmptyMCPToolResult(text) || isFailedShellResult(text) {
+			continue
+		}
+		if looksLikeSourceCode(text, lastReadPath) {
+			out[NormalizeFilePath(lastReadPath)] = text
+		}
+		lastReadPath = ""
+	}
+	return out
+}
+
+// EnrichMessagesWithCachedRead appends synthetic tool history when the client omits it.
+func EnrichMessagesWithCachedRead(messages []ChatMessage, path, cached string) []ChatMessage {
+	if path == "" || cached == "" || conversationHasFileReadResult(messages, path) {
+		return messages
+	}
+	args, _ := json.Marshal(map[string]any{"path": path})
+	out := append([]ChatMessage{}, messages...)
+	out = append(out,
+		ChatMessage{
+			Role: "assistant",
+			ToolCalls: []map[string]any{{
+				"id": "call_cached_read", "type": "function",
+				"function": map[string]any{
+					"name": "read_file", "arguments": string(args),
+				},
+			}},
+		},
+		ChatMessage{
+			Role: "tool", ToolCallID: "call_cached_read", Name: "shell_command",
+			Content: cached,
+		},
+	)
+	return out
 }
 
 func looksLikeExploreTask(text string) bool {
@@ -513,6 +680,23 @@ func SanitizeExploreToolCalls(messages []ChatMessage, toolCalls []map[string]any
 	if len(toolCalls) == 0 {
 		return toolCalls
 	}
+	request := ExtractLastUserMessage(messages)
+	targetFile := extractFilePathFromRequest(request)
+	if targetFile != "" && conversationHasFileReadResult(messages, targetFile) {
+		var kept []map[string]any
+		for _, tc := range NormalizeToolCalls(toolCalls) {
+			if isReadToolCall(tc) {
+				if p := readPathFromToolCall(tc); p == "" || NormalizeFilePath(p) == NormalizeFilePath(targetFile) {
+					continue
+				}
+			}
+			kept = append(kept, tc)
+		}
+		toolCalls = kept
+		if len(toolCalls) == 0 {
+			return toolCalls
+		}
+	}
 	if conversationHasDirectoryListing(messages) {
 		var kept []map[string]any
 		for _, tc := range NormalizeToolCalls(toolCalls) {
@@ -575,7 +759,12 @@ func conversationHasUsefulToolResults(messages []ChatMessage) bool {
 
 // NeedsAgentTooling reports whether this request still needs a local tool round-trip.
 func NeedsAgentTooling(messages []ChatMessage) bool {
-	if _, ok := shouldPreemptiveRead(messages); ok {
+	return NeedsAgentToolingWithState(messages, nil)
+}
+
+// NeedsAgentToolingWithState is like NeedsAgentTooling but respects server-side read-issued state.
+func NeedsAgentToolingWithState(messages []ChatMessage, readAlreadyIssued func(string) bool) bool {
+	if _, ok := shouldPreemptiveRead(messages, readAlreadyIssued); ok {
 		return true
 	}
 	return ShouldExploreBootstrap(messages)
@@ -583,7 +772,11 @@ func NeedsAgentTooling(messages []ChatMessage) bool {
 
 // AgentFallbackToolCalls always returns a concrete tool for explore/read tasks when possible.
 func AgentFallbackToolCalls(messages []ChatMessage, clientTools []map[string]any) []map[string]any {
-	if calls := PreemptiveAgentToolCalls(messages, clientTools); len(calls) > 0 {
+	return AgentFallbackToolCallsWithState(messages, clientTools, nil)
+}
+
+func AgentFallbackToolCallsWithState(messages []ChatMessage, clientTools []map[string]any, readAlreadyIssued func(string) bool) []map[string]any {
+	if calls := PreemptiveAgentToolCallsWithState(messages, clientTools, readAlreadyIssued); len(calls) > 0 {
 		return SanitizeExploreToolCalls(messages, calls, clientTools)
 	}
 	return nil
@@ -592,7 +785,11 @@ func AgentFallbackToolCalls(messages []ChatMessage, clientTools []map[string]any
 // PreemptiveAgentToolCalls returns tool_calls before calling Notion when the client
 // still needs filesystem exploration (Codex first turn on analyze/list tasks).
 func PreemptiveAgentToolCalls(messages []ChatMessage, clientTools []map[string]any) []map[string]any {
-	if file, ok := shouldPreemptiveRead(messages); ok {
+	return PreemptiveAgentToolCallsWithState(messages, clientTools, nil)
+}
+
+func PreemptiveAgentToolCallsWithState(messages []ChatMessage, clientTools []map[string]any, readAlreadyIssued func(string) bool) []map[string]any {
+	if file, ok := shouldPreemptiveRead(messages, readAlreadyIssued); ok {
 		if calls := buildReadToolCall(file, clientTools, messages); len(calls) > 0 {
 			return calls
 		}

@@ -26,6 +26,8 @@ type Server struct {
 	sessionThreads map[string]string
 	sessionModels  map[string]string
 	exploreDone    map[string]bool
+	readIssued     map[string]bool
+	fileReadCache  map[string]string
 	mu             sync.Mutex
 }
 
@@ -36,6 +38,8 @@ func NewServer(settings *config.Settings, creds *credentials.Store) *Server {
 		sessionThreads: make(map[string]string),
 		sessionModels:  make(map[string]string),
 		exploreDone:    make(map[string]bool),
+		readIssued:     make(map[string]bool),
+		fileReadCache:  make(map[string]string),
 	}
 }
 
@@ -56,6 +60,77 @@ func (s *Server) markExploreDone(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.exploreDone[key] = true
+}
+
+func (s *Server) readKey(sessionKey, path string) string {
+	return sessionKey + "::" + tools.NormalizeFilePath(path)
+}
+
+func (s *Server) readAlreadyIssued(sessionKey, path string) bool {
+	if path == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readIssued[s.readKey(sessionKey, path)]
+}
+
+func (s *Server) markReadIssued(sessionKey string, paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		s.readIssued[s.readKey(sessionKey, path)] = true
+	}
+}
+
+func (s *Server) storeFileReads(sessionKey string, reads map[string]string) {
+	if len(reads) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for normPath, content := range reads {
+		if content == "" {
+			continue
+		}
+		s.fileReadCache[sessionKey+"::"+normPath] = content
+	}
+}
+
+func (s *Server) cachedFileRead(sessionKey, path string) string {
+	if path == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fileReadCache[s.readKey(sessionKey, path)]
+}
+
+func (s *Server) prepareAgentMessages(sessionKey string, messages []tools.ChatMessage) []tools.ChatMessage {
+	reads := tools.CacheFileReadsFromMessages(messages)
+	s.storeFileReads(sessionKey, reads)
+
+	request := tools.ExtractLastUserMessage(messages)
+	file := tools.ExtractFilePathFromRequest(request)
+	if file == "" {
+		return messages
+	}
+	if cached := s.cachedFileRead(sessionKey, file); cached != "" {
+		return tools.EnrichMessagesWithCachedRead(messages, file, cached)
+	}
+	return messages
+}
+
+func (s *Server) readIssuedChecker(sessionKey string) func(string) bool {
+	return func(path string) bool {
+		return s.readAlreadyIssued(sessionKey, path)
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -200,14 +275,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	settings := config.Get()
-	system, prompt, toolsActive, ideAgent, normalizedTools, err := tools.PrepareChatInput(req.Messages, req.Tools, req.ToolChoice)
+	sessionKey := tools.SessionKeyFromMessages(req.User, s.settings.APIKey, req.Messages)
+	agentMessages := s.prepareAgentMessages(sessionKey, req.Messages)
+	readIssued := s.readIssuedChecker(sessionKey)
+
+	system, prompt, toolsActive, ideAgent, normalizedTools, err := tools.PrepareChatInput(agentMessages, req.Tools, req.ToolChoice)
 	if err != nil {
 		writeNotionError(w, err)
 		return
 	}
 
-	sessionKey := tools.SessionKeyFromMessages(req.User, s.settings.APIKey, req.Messages)
-	latestUser := tools.ExtractLastUserMessage(req.Messages)
+	latestUser := tools.ExtractLastUserMessage(agentMessages)
 	threadID := ""
 	if !ideAgent && !toolsActive {
 		threadID = s.resolveThreadID(sessionKey, req.Model, req.Messages)
@@ -227,15 +305,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	s.ensureModelAliases(c, settings)
 
-	if toolsActive && tools.NeedsAgentTooling(req.Messages) {
+	if toolsActive && tools.NeedsAgentToolingWithState(agentMessages, readIssued) {
 		exploreKey := s.exploreKey(req.User, sessionKey)
-		preempt := tools.AgentFallbackToolCalls(req.Messages, normalizedTools)
+		preempt := tools.AgentFallbackToolCallsWithState(agentMessages, normalizedTools, readIssued)
 		if len(preempt) > 0 && tools.ExploreToolCallsIssued(preempt) && s.exploreAlreadyDone(exploreKey) {
 			preempt = nil
 		}
 		if len(preempt) > 0 {
 			if tools.ExploreToolCallsIssued(preempt) {
 				s.markExploreDone(exploreKey)
+			}
+			if tools.ReadToolCallsIssued(preempt) {
+				s.markReadIssued(sessionKey, tools.ReadPathsFromToolCalls(preempt))
 			}
 			log.Printf("preemptive tool_calls=%v explore_key=%q", tools.ToolCallNames(preempt), exploreKey)
 			if useStream {
@@ -248,7 +329,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if useStream {
-		s.streamResponse(w, c, &req, system, prompt, threadID, latestUser, sessionKey, settings, toolsActive, ideAgent, normalizedTools)
+		s.streamResponse(w, c, &req, agentMessages, system, prompt, threadID, latestUser, sessionKey, settings, toolsActive, ideAgent, normalizedTools, readIssued)
 		return
 	}
 
@@ -257,10 +338,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeNotionError(w, err)
 		return
 	}
-	result = s.bridgeIDEAgent(result, &req, normalizedTools, prompt, ideAgent, toolsActive, c, system)
+	result = s.bridgeIDEAgent(result, &req, agentMessages, normalizedTools, prompt, ideAgent, toolsActive, c, system)
 
-	if toolsActive && len(result.ToolCalls) == 0 && strings.TrimSpace(result.Text) == "" && tools.NeedsAgentTooling(req.Messages) {
-		if fallback := tools.AgentFallbackToolCalls(req.Messages, normalizedTools); len(fallback) > 0 {
+	if toolsActive && len(result.ToolCalls) == 0 && strings.TrimSpace(result.Text) == "" && tools.NeedsAgentToolingWithState(agentMessages, readIssued) {
+		if fallback := tools.AgentFallbackToolCallsWithState(agentMessages, normalizedTools, readIssued); len(fallback) > 0 {
 			result.ToolCalls = fallback
 			result.Text = ""
 		}
@@ -293,9 +374,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) streamResponse(
-	w http.ResponseWriter, c *client.NotionAIClient, req *chatRequest,
+	w http.ResponseWriter, c *client.NotionAIClient, req *chatRequest, agentMessages []tools.ChatMessage,
 	system, prompt, threadID, latestUser, sessionKey string, settings *config.Settings,
-	toolsActive, ideAgent bool, normalizedTools []map[string]any,
+	toolsActive, ideAgent bool, normalizedTools []map[string]any, readIssued func(string) bool,
 ) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -339,7 +420,7 @@ func (s *Server) streamResponse(
 	result, err := handle.Finalize()
 	if err != nil {
 		empty := &client.ChatResult{ThreadID: handle.ThreadID, Model: req.Model}
-		result = s.bridgeIDEResult(empty, req, normalizedTools, prompt, ideAgent, toolsActive, c, system)
+		result = s.bridgeIDEResult(empty, req, agentMessages, normalizedTools, prompt, ideAgent, toolsActive, c, system)
 		if result == nil || (len(result.ToolCalls) == 0 && strings.TrimSpace(result.Text) == "") {
 			errJSON, _ := json.Marshal(map[string]any{
 				"error": map[string]any{"message": err.Error(), "type": "notion_error", "code": errors.HTTPStatus(err)},
@@ -349,7 +430,7 @@ func (s *Server) streamResponse(
 			return
 		}
 	} else {
-		result = s.bridgeIDEResult(result, req, normalizedTools, prompt, ideAgent, toolsActive, c, system)
+		result = s.bridgeIDEResult(result, req, agentMessages, normalizedTools, prompt, ideAgent, toolsActive, c, system)
 	}
 
 	if !ideAgent && !toolsActive && result != nil {
@@ -357,26 +438,32 @@ func (s *Server) streamResponse(
 	}
 
 	if result != nil && len(result.ToolCalls) > 0 {
-		result.ToolCalls = tools.SanitizeExploreToolCalls(req.Messages, result.ToolCalls, normalizedTools)
+		result.ToolCalls = tools.SanitizeExploreToolCalls(agentMessages, result.ToolCalls, normalizedTools)
 		if len(result.ToolCalls) > 0 {
 			if tools.ExploreToolCallsIssued(result.ToolCalls) {
 				s.markExploreDone(s.exploreKey(req.User, sessionKey))
 			}
+			if tools.ReadToolCallsIssued(result.ToolCalls) {
+				s.markReadIssued(sessionKey, tools.ReadPathsFromToolCalls(result.ToolCalls))
+			}
 			emitToolCallChunks(w, flusher, completionID, created, req.Model, result.ToolCalls)
-		} else if fallback := tools.AgentFallbackToolCalls(req.Messages, normalizedTools); len(fallback) > 0 {
+		} else if fallback := tools.AgentFallbackToolCallsWithState(agentMessages, normalizedTools, readIssued); len(fallback) > 0 {
 			emitToolCallChunks(w, flusher, completionID, created, req.Model, fallback)
 		} else {
 			s.emitStreamText(w, flusher, completionID, created, req.Model, s.fallbackAgentText(result))
 		}
 	} else if toolsActive && (tools.LooksLikeToolDenial(strings.Join(buffered, "")) || (result != nil && strings.TrimSpace(result.Text) == "" && len(buffered) == 0)) {
 		exploreKey := s.exploreKey(req.User, sessionKey)
-		preempt := tools.AgentFallbackToolCalls(req.Messages, normalizedTools)
+		preempt := tools.AgentFallbackToolCallsWithState(agentMessages, normalizedTools, readIssued)
 		if len(preempt) > 0 && tools.ExploreToolCallsIssued(preempt) && s.exploreAlreadyDone(exploreKey) {
 			preempt = nil
 		}
 		if len(preempt) > 0 {
 			if tools.ExploreToolCallsIssued(preempt) {
 				s.markExploreDone(exploreKey)
+			}
+			if tools.ReadToolCallsIssued(preempt) {
+				s.markReadIssued(sessionKey, tools.ReadPathsFromToolCalls(preempt))
 			}
 			emitToolCallChunks(w, flusher, completionID, created, req.Model, preempt)
 		} else if result != nil && strings.TrimSpace(result.Text) != "" {
@@ -400,14 +487,14 @@ func (s *Server) streamResponse(
 }
 
 func (s *Server) bridgeIDEAgent(
-	result *client.ChatResult, req *chatRequest, normalizedTools []map[string]any,
+	result *client.ChatResult, req *chatRequest, agentMessages []tools.ChatMessage, normalizedTools []map[string]any,
 	prompt string, ideAgent, toolsActive bool, c *client.NotionAIClient, system string,
 ) *client.ChatResult {
-	return s.bridgeIDEResult(result, req, normalizedTools, prompt, ideAgent, toolsActive, c, system)
+	return s.bridgeIDEResult(result, req, agentMessages, normalizedTools, prompt, ideAgent, toolsActive, c, system)
 }
 
 func (s *Server) bridgeIDEResult(
-	result *client.ChatResult, req *chatRequest, normalizedTools []map[string]any,
+	result *client.ChatResult, req *chatRequest, agentMessages []tools.ChatMessage, normalizedTools []map[string]any,
 	prompt string, ideAgent, toolsActive bool, c *client.NotionAIClient, system string,
 ) *client.ChatResult {
 	if result == nil {
@@ -416,9 +503,9 @@ func (s *Server) bridgeIDEResult(
 	if !ideAgent || !toolsActive {
 		return result
 	}
-	text, toolCalls := tools.BridgeIDEAgentResponse(req.Messages, result.Text, result.ToolCalls, normalizedTools, prompt)
+	text, toolCalls := tools.BridgeIDEAgentResponse(agentMessages, result.Text, result.ToolCalls, normalizedTools, prompt)
 	if len(toolCalls) > 0 {
-		toolCalls = tools.SanitizeExploreToolCalls(req.Messages, toolCalls, normalizedTools)
+		toolCalls = tools.SanitizeExploreToolCalls(agentMessages, toolCalls, normalizedTools)
 		if len(toolCalls) == 0 {
 			denial := tools.LooksLikeToolDenial(result.Text)
 			if denial {
@@ -439,15 +526,15 @@ func (s *Server) bridgeIDEResult(
 	}
 	if len(result.ToolCalls) == 0 && (denial || tools.LooksLikeCodingTaskPrompt(prompt)) {
 		retrySystem := strings.TrimSpace(system)
-		appendText := tools.BuildToolDenialRetryAppend(req.Messages)
+		appendText := tools.BuildToolDenialRetryAppend(agentMessages)
 		if retrySystem != "" {
 			retrySystem += "\n\n" + appendText
 		} else {
 			retrySystem = appendText
 		}
-		retry, err := c.Complete(prompt, retrySystem, req.Model, "", tools.ExtractLastUserMessage(req.Messages), ideAgent, toolsActive, normalizedTools)
+		retry, err := c.Complete(prompt, retrySystem, req.Model, "", tools.ExtractLastUserMessage(agentMessages), ideAgent, toolsActive, normalizedTools)
 		if err == nil {
-			return s.bridgeIDEResult(retry, req, normalizedTools, prompt, ideAgent, toolsActive, c, system)
+			return s.bridgeIDEResult(retry, req, agentMessages, normalizedTools, prompt, ideAgent, toolsActive, c, system)
 		}
 	}
 	return result
