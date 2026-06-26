@@ -173,6 +173,20 @@ func truncateForLog(s string, n int) string {
 	return s[:n] + "..."
 }
 
+func shouldReleaseStreamBuffer(text string, ideAgentMode bool) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	if ideAgentMode && len(trimmed) >= 8 {
+		return true
+	}
+	return len(trimmed) >= 48 ||
+		strings.Contains(text, "\n") ||
+		strings.Contains(text, "\n#") ||
+		strings.HasPrefix(trimmed, "#")
+}
+
 func (c *NotionAIClient) runInference(
 	prompt, system, model, threadID, latestUser string,
 	ideAgentMode, toolsActive bool,
@@ -213,9 +227,7 @@ func (c *NotionAIClient) runInference(
 		}
 		text := parser.Text()
 		if !hasReleased {
-			shouldRelease := len(text) >= 500 || strings.Contains(text, "\n\n") ||
-				strings.Contains(text, "\n#") || strings.HasPrefix(text, "#")
-			if !shouldRelease {
+			if !shouldReleaseStreamBuffer(text, ideAgentMode) {
 				return nil
 			}
 			hasReleased = true
@@ -312,9 +324,7 @@ func (c *NotionAIClient) StreamDeltas(prompt, system, model, threadID, latestUse
 			}
 			text := parser.Text()
 			if !hasReleased {
-				shouldRelease := len(text) >= 500 || strings.Contains(text, "\n\n") ||
-					strings.Contains(text, "\n#") || strings.HasPrefix(text, "#")
-				if !shouldRelease {
+				if !shouldReleaseStreamBuffer(text, ideAgentMode) {
 					return nil
 				}
 				hasReleased = true

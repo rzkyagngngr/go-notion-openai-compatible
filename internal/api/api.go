@@ -130,10 +130,33 @@ func (s *Server) fetchModels() ([]map[string]any, error) {
 type chatRequest struct {
 	Model      string               `json:"model"`
 	Messages   []tools.ChatMessage  `json:"messages"`
-	Stream     bool                 `json:"stream"`
+	Stream     *bool                `json:"stream"`
 	User       string               `json:"user"`
 	Tools      []map[string]any     `json:"tools"`
 	ToolChoice any                  `json:"tool_choice"`
+}
+
+func wantsStream(req *chatRequest, r *http.Request, toolsActive, ideAgent bool) bool {
+	if toolsActive || ideAgent {
+		return true
+	}
+	if accept := r.Header.Get("Accept"); strings.Contains(accept, "text/event-stream") {
+		return true
+	}
+	if req.Stream != nil {
+		return *req.Stream
+	}
+	return true
+}
+
+func streamFieldLabel(stream *bool) string {
+	if stream == nil {
+		return "omitted"
+	}
+	if *stream {
+		return "true"
+	}
+	return "false"
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -168,7 +191,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if !ideAgent && !toolsActive {
 		threadID = s.resolveThreadID(sessionKey, req.Model, req.Messages)
 	}
-	log.Printf("chat session=%q thread=%q msgs=%d latest_user=%q", sessionKey, threadID, len(req.Messages), truncate(latestUser, 60))
+	useStream := wantsStream(&req, r, toolsActive, ideAgent)
+	log.Printf(
+		"chat stream_field=%s use_stream=%v tools=%v ide_agent=%v session=%q thread=%q msgs=%d latest_user=%q",
+		streamFieldLabel(req.Stream), useStream, toolsActive, ideAgent,
+		sessionKey, threadID, len(req.Messages), truncate(latestUser, 60),
+	)
 
 	c, err := s.getClient()
 	if err != nil {
@@ -178,7 +206,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	s.ensureModelAliases(c, settings)
 
-	if req.Stream {
+	if useStream {
 		s.streamResponse(w, c, &req, system, prompt, threadID, latestUser, sessionKey, settings, toolsActive, ideAgent, normalizedTools)
 		return
 	}
@@ -226,9 +254,17 @@ func (s *Server) streamResponse(
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	completionID := "chatcmpl-" + uuid.New().String()[:24]
 	created := time.Now().Unix()
+
+	writeChunk(w, completionID, created, req.Model, map[string]any{"role": "assistant", "content": ""}, nil)
+	flusher.Flush()
+
+	done := make(chan struct{})
+	defer close(done)
+	go streamKeepalive(w, flusher, done)
 
 	handle, err := c.StreamDeltas(prompt, system, req.Model, threadID, latestUser, ideAgent, toolsActive, normalizedTools)
 	if err != nil {
@@ -241,16 +277,10 @@ func (s *Server) streamResponse(
 	}
 
 	var buffered []string
-	if toolsActive {
-		for delta := range handle.Deltas {
-			buffered = append(buffered, delta)
-		}
-	} else {
-		for delta := range handle.Deltas {
-			buffered = append(buffered, delta)
-			writeChunk(w, completionID, created, req.Model, map[string]any{"content": delta}, nil)
-			flusher.Flush()
-		}
+	for delta := range handle.Deltas {
+		buffered = append(buffered, delta)
+		writeChunk(w, completionID, created, req.Model, map[string]any{"content": delta}, nil)
+		flusher.Flush()
 	}
 
 	result, err := handle.Finalize()
@@ -305,15 +335,9 @@ func (s *Server) streamResponse(
 		}
 		writeChunk(w, completionID, created, req.Model, map[string]any{}, strPtr("tool_calls"))
 	} else {
-		pieces := buffered
-		if len(pieces) == 0 && result != nil && result.Text != "" {
-			pieces = []string{result.Text}
-		}
-		if toolsActive {
-			for _, piece := range pieces {
-				writeChunk(w, completionID, created, req.Model, map[string]any{"content": piece}, nil)
-				flusher.Flush()
-			}
+		if len(buffered) == 0 && result != nil && result.Text != "" {
+			writeChunk(w, completionID, created, req.Model, map[string]any{"content": result.Text}, nil)
+			flusher.Flush()
 		}
 		writeChunk(w, completionID, created, req.Model, map[string]any{}, strPtr("stop"))
 	}
@@ -455,6 +479,20 @@ func assistantMessage(result *client.ChatResult) map[string]any {
 		msg["content"] = result.Text
 	}
 	return msg
+}
+
+func streamKeepalive(w http.ResponseWriter, flusher http.Flusher, done <-chan struct{}) {
+	ticker := time.NewTicker(12 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+	}
 }
 
 func writeChunk(w http.ResponseWriter, id string, created int64, model string, delta map[string]any, finish *string) {
