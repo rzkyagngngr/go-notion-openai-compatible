@@ -38,6 +38,7 @@ func BuildHeaders(acc *account.NotionAccount, accept string) map[string]string {
 	}
 	return map[string]string{
 		"accept":                      accept,
+		"accept-encoding":             "identity",
 		"accept-language":             "en-US,en;q=0.9",
 		"content-type":                "application/json",
 		"notion-audit-log-platform":   "web",

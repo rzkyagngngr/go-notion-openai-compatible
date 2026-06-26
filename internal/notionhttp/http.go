@@ -3,6 +3,7 @@ package notionhttp
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -90,7 +91,26 @@ func (c *Client) PostStream(url string, body map[string]any, headers map[string]
 		resp.Body.Close()
 		return nil, resp.StatusCode, string(bodyBytes), nil
 	}
-	return resp.Body, resp.StatusCode, "", nil
+	stream := io.ReadCloser(resp.Body)
+	if enc := strings.ToLower(resp.Header.Get("Content-Encoding")); strings.Contains(enc, "gzip") {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			resp.Body.Close()
+			return nil, 0, "", fmt.Errorf("gzip reader: %w", err)
+		}
+		stream = &gzipReadCloser{Reader: gz, underlying: resp.Body}
+	}
+	return stream, resp.StatusCode, "", nil
+}
+
+type gzipReadCloser struct {
+	*gzip.Reader
+	underlying io.Closer
+}
+
+func (g *gzipReadCloser) Close() error {
+	_ = g.Reader.Close()
+	return g.underlying.Close()
 }
 
 func ReadLines(r io.Reader, onLine func(string) error) error {
