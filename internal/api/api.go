@@ -344,15 +344,14 @@ func (s *Server) bridgeIDEResult(
 		result.ToolCalls = toolCalls
 		return result
 	}
-	if tools.LooksLikeToolDenial(result.Text) {
+	denial := tools.LooksLikeToolDenial(result.Text)
+	if denial {
 		result.Text = ""
 		result.ToolCalls = nil
-		return result
-	}
-	if text != "" {
+	} else if text != "" {
 		result.Text = text
 	}
-	if len(result.ToolCalls) == 0 && (tools.LooksLikeToolDenial(result.Text) || tools.LooksLikeCodingTaskPrompt(prompt)) {
+	if len(result.ToolCalls) == 0 && (denial || tools.LooksLikeCodingTaskPrompt(prompt)) {
 		retrySystem := strings.TrimSpace(system)
 		appendText := tools.BuildToolDenialRetryAppend()
 		if retrySystem != "" {
