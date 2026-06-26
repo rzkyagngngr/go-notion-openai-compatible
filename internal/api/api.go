@@ -229,20 +229,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	if toolsActive {
 		exploreKey := s.exploreKey(req.User, sessionKey)
-		if !s.exploreAlreadyDone(exploreKey) {
-			if preempt := tools.PreemptiveAgentToolCalls(req.Messages, normalizedTools); len(preempt) > 0 {
-				preempt = tools.SanitizeExploreToolCalls(req.Messages, preempt, normalizedTools)
-				if len(preempt) > 0 {
-					s.markExploreDone(exploreKey)
-					log.Printf("preemptive tool_calls=%v explore_key=%q", tools.ToolCallNames(preempt), exploreKey)
-					if useStream {
-						s.streamToolCalls(w, &req, preempt)
-						return
-					}
-					s.writeToolCallCompletion(w, &req, preempt)
-					return
-				}
+		preempt := tools.PreemptiveAgentToolCalls(req.Messages, normalizedTools)
+		preempt = tools.SanitizeExploreToolCalls(req.Messages, preempt, normalizedTools)
+		if len(preempt) > 0 && tools.ExploreToolCallsIssued(preempt) && s.exploreAlreadyDone(exploreKey) {
+			preempt = nil
+		}
+		if len(preempt) > 0 {
+			if tools.ExploreToolCallsIssued(preempt) {
+				s.markExploreDone(exploreKey)
 			}
+			log.Printf("preemptive tool_calls=%v explore_key=%q", tools.ToolCallNames(preempt), exploreKey)
+			if useStream {
+				s.streamToolCalls(w, &req, preempt)
+				return
+			}
+			s.writeToolCallCompletion(w, &req, preempt)
+			return
 		}
 	}
 
@@ -422,7 +424,7 @@ func (s *Server) bridgeIDEResult(
 	}
 	if len(result.ToolCalls) == 0 && (denial || tools.LooksLikeCodingTaskPrompt(prompt)) {
 		retrySystem := strings.TrimSpace(system)
-		appendText := tools.BuildToolDenialRetryAppend()
+		appendText := tools.BuildToolDenialRetryAppend(req.Messages)
 		if retrySystem != "" {
 			retrySystem += "\n\n" + appendText
 		} else {

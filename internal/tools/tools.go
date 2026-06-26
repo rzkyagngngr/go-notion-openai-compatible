@@ -411,30 +411,54 @@ func LooksLikeToolDenial(text string) bool {
 	return false
 }
 
+func LooksLikeScaffoldTask(text string) bool {
+	lower := strings.ToLower(text)
+	hints := []string{
+		"scaffold", "npm create", "create vite", "create next", "create-react",
+		"create app", "bootstrap", "from scratch", "new project", "init project",
+	}
+	for _, h := range hints {
+		if strings.Contains(lower, h) {
+			return true
+		}
+	}
+	buildHints := []string{"create", "build", "implement", "generate"}
+	for _, h := range buildHints {
+		if strings.Contains(lower, h) {
+			for _, stack := range []string{"vite", "react", "next.js", "nextjs", "tailwind", "shadcn"} {
+				if strings.Contains(lower, stack) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func LooksLikeCodingTaskPrompt(prompt string) bool {
 	lower := strings.ToLower(prompt)
 	tail := lower
 	if idx := strings.LastIndex(lower, "user:"); idx >= 0 {
 		tail = lower[idx+5:]
 	}
-	hints := []string{
-		"create", "build", "scaffold", "implement", "vite", "react", "app", "project",
-		"analisa", "analisis", "analyze", "codebase", "audit", "explore", "fix ", "refactor",
+	if looksLikeExploreTask(tail) {
+		return true
 	}
-	for _, h := range hints {
-		if strings.Contains(tail, h) {
-			return true
-		}
-	}
-	return false
+	return LooksLikeScaffoldTask(tail)
 }
 
-func BuildToolDenialRetryAppend() string {
-	return "You ARE the coding agent. Shell/Read/Glob/Grep tools execute on the user's machine via Codex or Cursor — you have access ONLY through tool_calls JSON.\n" +
-		"Never say you are Notion AI or lack filesystem/terminal access.\n" +
-		"For codebase analysis: respond with ONLY JSON tool_calls — start with Glob or Shell to list files, then Read.\n" +
-		`Example: {"content": null, "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "shell_command", "arguments": "{\"command\":\"Get-ChildItem -Force\"}"}}]}\n` +
-		"For scaffolding: `npm create vite@latest .` via Shell alone first; Write files after shell results."
+func BuildToolDenialRetryAppend(messages []ChatMessage) string {
+	request := ExtractLastUserMessage(messages)
+	if file := extractFilePathFromRequest(request); file != "" {
+		return "You ARE the coding agent. Read the requested file with read_file/read_mcp_resource — do NOT scaffold or run npm create.\n" +
+			`Example: {"content": null, "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"" + file + "\"}"}}]}`
+	}
+	if looksLikeExploreTask(request) {
+		return "You ARE the coding agent. For analysis: use Get-ChildItem -Force or read_file — never npm create vite.\n" +
+			`Example: {"content": null, "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "shell_command", "arguments": "{\"command\":\"Get-ChildItem -Force\"}"}}]}`
+	}
+	return "You ARE the coding agent. Only scaffold when the user explicitly asks to create a new app.\n" +
+		"For scaffolding: `npm create vite@latest .` via shell_command alone first."
 }
 
 func ParseAssistantOutput(text string) (string, []map[string]any) {

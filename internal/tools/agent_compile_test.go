@@ -37,6 +37,30 @@ func TestPreemptiveExploreWithoutNotion(t *testing.T) {
 	}
 }
 
+func TestPreemptiveReadSpecificFile(t *testing.T) {
+	msgs := []ChatMessage{{Role: "user", Content: "analisa cmd\\server\\main.go"}}
+	calls := PreemptiveAgentToolCalls(msgs, CodexFallbackTools())
+	if len(calls) == 0 {
+		t.Fatal("expected read tool call")
+	}
+	name := ToolCallNames(calls)[0]
+	if name != "read_file" && name != "read_mcp_resource" {
+		t.Fatalf("expected read tool, got %s", name)
+	}
+	fn, _ := calls[0]["function"].(map[string]any)
+	if !strings.Contains(stringVal(fn["arguments"]), "main.go") {
+		t.Fatalf("expected main.go path in args: %s", fn["arguments"])
+	}
+}
+
+func TestScaffoldBlockedOnAnalyze(t *testing.T) {
+	msgs := []ChatMessage{{Role: "user", Content: "analisa cmd/server/main.go"}}
+	denial := "Maaf, saya Notion AI"
+	if calls := bootstrapScaffoldToolCalls(msgs, denial, CodexFallbackTools()); len(calls) != 0 {
+		t.Fatalf("scaffold must not run on analyze task, got %v", ToolCallNames(calls))
+	}
+}
+
 func TestExploreSkipsMCPTools(t *testing.T) {
 	tools := fallbackTools([]string{"list_mcp_resources", "read_mcp_resource", "shell_command", "glob_file_search"})
 	msgs := []ChatMessage{{Role: "user", Content: "analisa codebase"}}

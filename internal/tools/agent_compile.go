@@ -16,6 +16,7 @@ var (
 	cmdLineRe    = regexp.MustCompile(`(?im)^(?:npm|npx|pnpm|yarn|bun|cd|mkdir|curl|git|ls|dir|Get-ChildItem|rg|grep|find)\b.+$`)
 	winPathRe    = regexp.MustCompile(`[A-Za-z]:\\(?:[^\\\n]+\\)*[^\\\n]+`)
 	unixPathRe   = regexp.MustCompile(`/(?:[\w.-]+/)*[\w.-]+`)
+	filePathRe   = regexp.MustCompile(`(?i)(?:@)?(?:[\w.-]+[\\/])+[\w.-]+\.(?:go|ts|tsx|js|jsx|py|md|json|rs|java|cs|yaml|yml|txt|html|css|vue|toml|mod|sum|xml|gradle)`)
 )
 
 func pickTool(clientTools []map[string]any, candidates ...string) string {
@@ -280,7 +281,17 @@ func synthesizeShellToolCalls(notionText string, clientTools []map[string]any) [
 	return out
 }
 
+func extractFilePathFromRequest(request string) string {
+	if m := filePathRe.FindString(strings.TrimSpace(request)); m != "" {
+		return strings.TrimPrefix(strings.Trim(m, `"'`), "@")
+	}
+	return ""
+}
+
 func extractPathFromRequest(request string) string {
+	if file := extractFilePathFromRequest(request); file != "" {
+		return file
+	}
 	if m := winPathRe.FindString(request); m != "" {
 		return m
 	}
@@ -288,6 +299,59 @@ func extractPathFromRequest(request string) string {
 		return m
 	}
 	return ""
+}
+
+func isScaffoldShellCommand(cmd string) bool {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	return strings.Contains(lower, "npm create") ||
+		strings.Contains(lower, "create-vite") ||
+		strings.Contains(lower, "create vite") ||
+		strings.Contains(lower, "create next") ||
+		strings.Contains(lower, "pnpm create") ||
+		strings.Contains(lower, "yarn create")
+}
+
+func buildReadToolCall(path string, clientTools []map[string]any, messages []ChatMessage) []map[string]any {
+	readTool := pickReadTool(clientTools)
+	if readTool == "" {
+		return nil
+	}
+	args := map[string]any{"path": path}
+	if strings.Contains(strings.ToLower(readTool), "mcp") {
+		args = map[string]any{"uri": path, "path": path}
+	}
+	return []map[string]any{makeToolCall(readTool, args)}
+}
+
+func shouldPreemptiveRead(messages []ChatMessage) (string, bool) {
+	request := ExtractLastUserMessage(messages)
+	file := extractFilePathFromRequest(request)
+	if file == "" || !looksLikeExploreTask(request) {
+		return "", false
+	}
+	if conversationHasFileReadResult(messages, file) {
+		return "", false
+	}
+	return file, true
+}
+
+func conversationHasFileReadResult(messages []ChatMessage, path string) bool {
+	needle := strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	for _, msg := range messages {
+		if msg.Role != "tool" {
+			continue
+		}
+		text := extractText(msg.Content)
+		if len(text) < 40 {
+			continue
+		}
+		if strings.Contains(strings.ToLower(text), needle) ||
+			strings.Contains(text, "func ") || strings.Contains(text, "package ") ||
+			strings.Contains(text, "import ") {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeExploreTask(text string) bool {
@@ -356,7 +420,13 @@ func ShouldExploreBootstrap(messages []ChatMessage) bool {
 		return false
 	}
 	request := ExtractLastUserMessage(messages)
-	return request != "" && looksLikeExploreTask(request)
+	if request == "" || !looksLikeExploreTask(request) {
+		return false
+	}
+	if extractFilePathFromRequest(request) != "" {
+		return false
+	}
+	return true
 }
 
 func buildExploreToolCalls(messages []ChatMessage, clientTools []map[string]any) []map[string]any {
@@ -372,9 +442,6 @@ func buildExploreToolCalls(messages []ChatMessage, clientTools []map[string]any)
 	if tool := pickExploreTool(clientTools); tool != "" {
 		calls := []map[string]any{makeToolCall(tool, buildExploreArgs(tool, path, messages))}
 		return SanitizeExploreToolCalls(messages, calls, clientTools)
-	}
-	if readTool := pickReadTool(clientTools); readTool != "" && path != "" {
-		return []map[string]any{makeToolCall(readTool, map[string]any{"path": path})}
 	}
 	return nil
 }
@@ -456,6 +523,12 @@ func SanitizeExploreToolCalls(messages []ChatMessage, toolCalls []map[string]any
 
 		if strings.Contains(strings.ToLower(name), "shell") || strings.Contains(strings.ToLower(name), "command") {
 			fixed := fixShellCommandArgs(args, messages, path)
+			if cmd := stringVal(fixed["command"]); isScaffoldShellCommand(cmd) && looksLikeExploreTask(ExtractLastUserMessage(messages)) {
+				if read := buildReadToolCall(extractFilePathFromRequest(ExtractLastUserMessage(messages)), clientTools, messages); len(read) > 0 {
+					out = append(out, read...)
+				}
+				continue
+			}
 			out = append(out, makeToolCall(name, fixed))
 			continue
 		}
@@ -481,6 +554,11 @@ func conversationHasUsefulToolResults(messages []ChatMessage) bool {
 // PreemptiveAgentToolCalls returns tool_calls before calling Notion when the client
 // still needs filesystem exploration (Codex first turn on analyze/list tasks).
 func PreemptiveAgentToolCalls(messages []ChatMessage, clientTools []map[string]any) []map[string]any {
+	if file, ok := shouldPreemptiveRead(messages); ok {
+		if calls := buildReadToolCall(file, clientTools, messages); len(calls) > 0 {
+			return calls
+		}
+	}
 	return buildExploreToolCalls(messages, clientTools)
 }
 
@@ -494,13 +572,14 @@ func ExploreToolCallsIssued(toolCalls []map[string]any) bool {
 }
 
 func bootstrapScaffoldToolCalls(messages []ChatMessage, notionText string, clientTools []map[string]any) []map[string]any {
-	if !LooksLikeCodingTaskPrompt(strings.Join([]string{ExtractLastUserMessage(messages)}, "\n")) {
+	request := ExtractLastUserMessage(messages)
+	if looksLikeExploreTask(request) || !LooksLikeScaffoldTask(request) {
 		return nil
 	}
 	if !LooksLikeToolDenial(notionText) && strings.TrimSpace(notionText) != "" {
 		return nil
 	}
-	shellTool := pickTool(clientTools, "Shell", "run_terminal_cmd", "run_terminal_command", "shell")
+	shellTool := pickShellTool(clientTools)
 	if shellTool == "" {
 		return nil
 	}
