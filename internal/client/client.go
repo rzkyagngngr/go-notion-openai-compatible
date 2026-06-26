@@ -139,6 +139,11 @@ func (c *NotionAIClient) prepare(prompt, system, model, threadID, latestUser str
 		}
 	}
 
+	cookie := account.BuildCookieHeader(c.Account)
+	if c.Account.UserID != "" && !strings.Contains(cookie, "notion_user_id="+c.Account.UserID) {
+		log.Printf("Notion cookie missing user_id=%q — inference may return empty", c.Account.UserID)
+	}
+
 	body := transcript.BuildInferenceRequest(c.Account, transcriptData, activeThreadID, createThread, isPartial, "")
 	return &prepareResult{
 		body: body, headers: BuildHeaders(c.Account, ""),

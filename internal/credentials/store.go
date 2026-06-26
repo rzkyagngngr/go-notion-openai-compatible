@@ -158,6 +158,7 @@ func (s *Store) GetAccount() (*account.NotionAccount, error) {
 	s.mu.RUnlock()
 
 	if acc != nil && acc.SpaceID != "" {
+		acc.FullCookie = account.BuildCookieHeader(acc)
 		return acc, nil
 	}
 
@@ -169,6 +170,7 @@ func (s *Store) GetAccount() (*account.NotionAccount, error) {
 		if loaded.SpaceID == "" {
 			return nil, errors.New("Account missing space_id. Connect via / first.", 500)
 		}
+		loaded.FullCookie = account.BuildCookieHeader(loaded)
 		s.mu.Lock()
 		s.account = loaded
 		s.mu.Unlock()

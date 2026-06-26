@@ -143,15 +143,42 @@ func (p *StreamParser) FeedLine(line string) error {
 		return nil
 	}
 	p.lineCount++
-	var event map[string]any
-	if err := json.Unmarshal([]byte(line), &event); err != nil {
+	var raw any
+	if err := json.Unmarshal([]byte(line), &raw); err != nil {
 		p.jsonFailures++
 		p.noteSample(line)
 		return nil
 	}
+	if arr, ok := raw.([]any); ok {
+		if len(arr) == 0 {
+			p.noteSample("[]")
+			return nil
+		}
+		for _, item := range arr {
+			event, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if err := p.feedEvent(event); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	event, ok := raw.(map[string]any)
+	if !ok {
+		p.noteSample(line)
+		return nil
+	}
+	return p.feedEvent(event)
+}
+
+func (p *StreamParser) feedEvent(event map[string]any) error {
 	eventType, _ := event["type"].(string)
 	if eventType == "" {
-		p.noteSample(line)
+		if b, _ := json.Marshal(event); len(b) > 0 {
+			p.noteSample(string(b))
+		}
 		return nil
 	}
 	p.eventTypeCounts[eventType]++
