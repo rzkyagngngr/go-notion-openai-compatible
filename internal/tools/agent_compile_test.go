@@ -17,10 +17,35 @@ func TestCompileAgentToolCallsFromJSON(t *testing.T) {
 func TestCompileAgentBootstrapExploreOnDenial(t *testing.T) {
 	msgs := []ChatMessage{{Role: "user", Content: "boleh analisa codebase di C:\\Users\\test\\poly-scan"}}
 	denial := "Maaf, saya Notion AI dan tidak punya akses ke shell atau filesystem."
-	clientTools := CursorFallbackTools()
+	clientTools := CodexFallbackTools()
 	_, calls := CompileAgentToolCalls(msgs, denial, nil, clientTools, "")
 	if len(calls) == 0 {
 		t.Fatal("expected bootstrap tool_calls on denial for codebase analysis")
+	}
+}
+
+func TestPreemptiveExploreWithoutNotion(t *testing.T) {
+	msgs := []ChatMessage{{Role: "user", Content: "coba analisa codebase disini"}}
+	calls := PreemptiveAgentToolCalls(msgs, CodexFallbackTools())
+	if len(calls) == 0 {
+		t.Fatal("expected preemptive tool_calls before Notion call")
+	}
+	if names := ToolCallNames(calls); len(names) == 0 || names[0] == "" {
+		t.Fatalf("expected tool name, got %v", names)
+	}
+}
+
+func TestPreemptiveSkipsAfterToolHistory(t *testing.T) {
+	msgs := []ChatMessage{
+		{Role: "user", Content: "analisa codebase"},
+		{Role: "assistant", ToolCalls: []map[string]any{{
+			"id": "call_1", "type": "function",
+			"function": map[string]any{"name": "shell_command", "arguments": "{}"},
+		}}},
+		{Role: "tool", Content: "file listing...", ToolCallID: "call_1", Name: "shell_command"},
+	}
+	if calls := PreemptiveAgentToolCalls(msgs, CodexFallbackTools()); len(calls) != 0 {
+		t.Fatalf("expected no preemptive after tool history, got %v", calls)
 	}
 }
 
@@ -38,7 +63,7 @@ func TestSkipCodexBootstrapPrompt(t *testing.T) {
 		{Role: "system", Content: "You are Codex CLI with terminal and filesystem access. Use tool_calls and run_terminal."},
 		{Role: "user", Content: "analisa codebase"},
 	}
-	system, _, toolsActive, ideAgent, _, err := PrepareChatInput(msgs, CursorFallbackTools(), nil)
+	system, _, toolsActive, ideAgent, _, err := PrepareChatInput(msgs, CodexFallbackTools(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +73,7 @@ func TestSkipCodexBootstrapPrompt(t *testing.T) {
 	if strings.Contains(system, "Codex CLI") {
 		t.Fatalf("client bootstrap prompt should be filtered: %q", system)
 	}
-	if !strings.Contains(system, "coding agent") {
-		t.Fatal("expected injected agent instruction")
+	if strings.Contains(system, "function-calling channel") {
+		t.Fatalf("tool schemas must not be injected into Notion system prompt: %q", system)
 	}
 }

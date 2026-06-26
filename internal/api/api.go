@@ -206,6 +206,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	s.ensureModelAliases(c, settings)
 
+	if toolsActive {
+		if preempt := tools.PreemptiveAgentToolCalls(req.Messages, normalizedTools); len(preempt) > 0 {
+			log.Printf("preemptive tool_calls=%v", tools.ToolCallNames(preempt))
+			if useStream {
+				s.streamToolCalls(w, &req, preempt)
+				return
+			}
+			s.writeToolCallCompletion(w, &req, preempt)
+			return
+		}
+	}
+
 	if useStream {
 		s.streamResponse(w, c, &req, system, prompt, threadID, latestUser, sessionKey, settings, toolsActive, ideAgent, normalizedTools)
 		return
@@ -279,8 +291,10 @@ func (s *Server) streamResponse(
 	var buffered []string
 	for delta := range handle.Deltas {
 		buffered = append(buffered, delta)
-		writeChunk(w, completionID, created, req.Model, map[string]any{"content": delta}, nil)
-		flusher.Flush()
+		if !toolsActive {
+			writeChunk(w, completionID, created, req.Model, map[string]any{"content": delta}, nil)
+			flusher.Flush()
+		}
 	}
 
 	result, err := handle.Finalize()
@@ -304,39 +318,20 @@ func (s *Server) streamResponse(
 	}
 
 	if result != nil && len(result.ToolCalls) > 0 {
-		writeChunk(w, completionID, created, req.Model, map[string]any{"role": "assistant", "content": nil}, nil)
-		flusher.Flush()
-		for i, tc := range result.ToolCalls {
-			fn, _ := tc["function"].(map[string]any)
-			writeChunk(w, completionID, created, req.Model, map[string]any{
-				"tool_calls": []map[string]any{{
-					"index": i, "id": tc["id"], "type": "function",
-					"function": map[string]any{"name": fn["name"], "arguments": ""},
-				}},
-			}, nil)
-			flusher.Flush()
-			args := fmt.Sprint(fn["arguments"])
-			step := len(args) / 4
-			if step < 1 {
-				step = 1
-			}
-			for pos := 0; pos < len(args); pos += step {
-				end := pos + step
-				if end > len(args) {
-					end = len(args)
-				}
-				writeChunk(w, completionID, created, req.Model, map[string]any{
-					"tool_calls": []map[string]any{{
-						"index": i, "function": map[string]any{"arguments": args[pos:end]},
-					}},
-				}, nil)
-				flusher.Flush()
-			}
+		emitToolCallChunks(w, flusher, completionID, created, req.Model, result.ToolCalls)
+	} else if toolsActive && tools.LooksLikeToolDenial(strings.Join(buffered, "")) {
+		if preempt := tools.PreemptiveAgentToolCalls(req.Messages, normalizedTools); len(preempt) > 0 {
+			emitToolCallChunks(w, flusher, completionID, created, req.Model, preempt)
+		} else {
+			writeChunk(w, completionID, created, req.Model, map[string]any{}, strPtr("stop"))
 		}
-		writeChunk(w, completionID, created, req.Model, map[string]any{}, strPtr("tool_calls"))
 	} else {
-		if len(buffered) == 0 && result != nil && result.Text != "" {
-			writeChunk(w, completionID, created, req.Model, map[string]any{"content": result.Text}, nil)
+		pieces := buffered
+		if len(pieces) == 0 && result != nil && result.Text != "" {
+			pieces = []string{result.Text}
+		}
+		for _, piece := range pieces {
+			writeChunk(w, completionID, created, req.Model, map[string]any{"content": piece}, nil)
 			flusher.Flush()
 		}
 		writeChunk(w, completionID, created, req.Model, map[string]any{}, strPtr("stop"))
@@ -479,6 +474,77 @@ func assistantMessage(result *client.ChatResult) map[string]any {
 		msg["content"] = result.Text
 	}
 	return msg
+}
+
+func (s *Server) streamToolCalls(w http.ResponseWriter, req *chatRequest, toolCalls []map[string]any) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	completionID := "chatcmpl-" + uuid.New().String()[:24]
+	created := time.Now().Unix()
+	writeChunk(w, completionID, created, req.Model, map[string]any{"role": "assistant", "content": ""}, nil)
+	flusher.Flush()
+	emitToolCallChunks(w, flusher, completionID, created, req.Model, toolCalls)
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+func (s *Server) writeToolCallCompletion(w http.ResponseWriter, req *chatRequest, toolCalls []map[string]any) {
+	result := &client.ChatResult{ToolCalls: toolCalls, Model: req.Model}
+	writeJSON(w, map[string]any{
+		"id":      "chatcmpl-" + uuid.New().String()[:24],
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   req.Model,
+		"choices": []map[string]any{{
+			"index": 0, "message": assistantMessage(result), "finish_reason": "tool_calls",
+		}},
+		"usage": map[string]int{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+	})
+}
+
+func emitToolCallChunks(
+	w http.ResponseWriter, flusher http.Flusher,
+	completionID string, created int64, model string, toolCalls []map[string]any,
+) {
+	writeChunk(w, completionID, created, model, map[string]any{"role": "assistant", "content": nil}, nil)
+	flusher.Flush()
+	for i, tc := range toolCalls {
+		fn, _ := tc["function"].(map[string]any)
+		writeChunk(w, completionID, created, model, map[string]any{
+			"tool_calls": []map[string]any{{
+				"index": i, "id": tc["id"], "type": "function",
+				"function": map[string]any{"name": fn["name"], "arguments": ""},
+			}},
+		}, nil)
+		flusher.Flush()
+		args := fmt.Sprint(fn["arguments"])
+		step := len(args) / 4
+		if step < 1 {
+			step = 1
+		}
+		for pos := 0; pos < len(args); pos += step {
+			end := pos + step
+			if end > len(args) {
+				end = len(args)
+			}
+			writeChunk(w, completionID, created, model, map[string]any{
+				"tool_calls": []map[string]any{{
+					"index": i, "function": map[string]any{"arguments": args[pos:end]},
+				}},
+			}, nil)
+			flusher.Flush()
+		}
+	}
+	writeChunk(w, completionID, created, model, map[string]any{}, strPtr("tool_calls"))
+	flusher.Flush()
 }
 
 func streamKeepalive(w http.ResponseWriter, flusher http.Flusher, done <-chan struct{}) {

@@ -24,6 +24,8 @@ var denialPhrases = []string{
 	"don't have access to terminal", "tidak punya akses", "tidak bisa melakukan",
 	"di luar kemampuan", "local workspace filesystem", "this chat environment",
 	"read/write/shell tools", "can't directly create or edit your",
+	"tidak punya tool", "status saya tidak berubah", "di-upgrade", "bukan berasal dari sistem saya",
+	"shell_command", "read_mcp_resource", "tidak punya", "tetap tidak bisa",
 }
 
 type ChatMessage struct {
@@ -144,7 +146,19 @@ func IsIDEAgentTools(tools []map[string]any) bool {
 }
 
 func CursorFallbackTools() []map[string]any {
-	names := []string{"Glob", "Read", "Write", "StrReplace", "Shell", "Grep", "SemanticSearch", "Delete", "ReadLints"}
+	return fallbackTools([]string{
+		"Glob", "Read", "Write", "StrReplace", "Shell", "Grep", "SemanticSearch", "Delete", "ReadLints",
+	})
+}
+
+func CodexFallbackTools() []map[string]any {
+	return fallbackTools([]string{
+		"shell_command", "read_mcp_resource", "list_mcp_resources", "grep", "glob_file_search",
+		"read_file", "list_dir", "Shell", "Read", "Glob", "Grep",
+	})
+}
+
+func fallbackTools(names []string) []map[string]any {
 	var out []map[string]any
 	for _, name := range names {
 		out = append(out, map[string]any{
@@ -156,6 +170,36 @@ func CursorFallbackTools() []map[string]any {
 		})
 	}
 	return out
+}
+
+func IsCodexMessages(messages []ChatMessage) bool {
+	for _, msg := range messages {
+		if msg.Role != "system" {
+			continue
+		}
+		lower := strings.ToLower(extractText(msg.Content))
+		if strings.Contains(lower, "codex") || strings.Contains(lower, "shell_command") || strings.Contains(lower, "read_mcp_resource") {
+			return true
+		}
+	}
+	return false
+}
+
+func InferClientTools(messages []ChatMessage, tools []map[string]any) []map[string]any {
+	normalized := NormalizeTools(tools)
+	if len(normalized) > 0 {
+		return normalized
+	}
+	if IsCodexMessages(messages) {
+		return CodexFallbackTools()
+	}
+	if IsIDEAgentMessages(messages) {
+		return CursorFallbackTools()
+	}
+	if looksLikeExploreTask(ExtractLastUserMessage(messages)) {
+		return CodexFallbackTools()
+	}
+	return nil
 }
 
 func ExtractLastUserMessage(messages []ChatMessage) string {
@@ -247,17 +291,16 @@ func SessionKeyFromMessages(user, apiKey string, messages []ChatMessage) string 
 }
 
 func PrepareChatInput(messages []ChatMessage, tools []map[string]any, toolChoice any) (system, prompt string, toolsActive, ideAgent bool, normalized []map[string]any, err error) {
-	cursorIDE := IsIDEAgentMessages(messages)
-	normalized = NormalizeTools(tools)
-	if len(normalized) == 0 && cursorIDE {
-		normalized = CursorFallbackTools()
-	}
+	normalized = InferClientTools(messages, tools)
 	toolsActive = len(normalized) > 0 && toolChoice != "none"
 	ideAgent = toolsActive
 
-	systemParts := []string{
-		"You are a helpful assistant. Respond directly in the conversation. " +
-			"Do not create, draft, or render Notion pages. Answer inline in the conversation.",
+	var systemParts []string
+	if !toolsActive {
+		systemParts = append(systemParts,
+			"You are a helpful assistant. Respond directly in the conversation. "+
+				"Do not create, draft, or render Notion pages. Answer inline in the conversation.",
+		)
 	}
 	var transcriptBlocks []string
 	var pendingToolResults []string
@@ -311,8 +354,11 @@ func PrepareChatInput(messages []ChatMessage, tools []map[string]any, toolChoice
 	if len(transcriptBlocks) == 0 {
 		return "", "", false, false, normalized, errors.New("No user message in request", 400)
 	}
-	if toolsActive {
-		systemParts = append(systemParts, buildToolsSystemAppend(normalized, toolChoice, ideAgent))
+	if toolsActive && conversationHasToolHistory(messages) {
+		systemParts = append(systemParts,
+			"The user is continuing a coding task. Tool results are embedded in the transcript below. "+
+				"Analyze them and answer inline. Do not claim you lack filesystem access — tools already ran on the user's machine.",
+		)
 	}
 	system = strings.Join(systemParts, "\n\n")
 	prompt = strings.Join(transcriptBlocks, "\n\n")

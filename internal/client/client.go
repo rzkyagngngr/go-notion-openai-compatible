@@ -66,8 +66,10 @@ type prepareResult struct {
 }
 
 func (c *NotionAIClient) prepare(prompt, system, model, threadID, latestUser string, ideAgentMode bool) (*prepareResult, error) {
+	// Agent mode: only send conversation transcript to Notion — never inject tool schemas
+	// into the user message (Notion rejects them as fake instructions).
 	joined := prompt
-	if system != "" {
+	if !ideAgentMode && system != "" {
 		joined = system + "\n\n" + prompt
 	}
 	if strings.TrimSpace(joined) == "" {

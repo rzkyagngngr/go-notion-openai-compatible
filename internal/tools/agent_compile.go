@@ -31,7 +31,41 @@ func pickTool(clientTools []map[string]any, candidates ...string) string {
 			return n
 		}
 	}
+	return pickToolByHint(clientTools, candidates...)
+}
+
+func pickToolByHint(clientTools []map[string]any, hints ...string) string {
+	allowed := clientToolNames(clientTools)
+	for name := range allowed {
+		lower := strings.ToLower(name)
+		for _, hint := range hints {
+			if strings.Contains(lower, strings.ToLower(hint)) {
+				return name
+			}
+		}
+	}
 	return ""
+}
+
+func pickShellTool(clientTools []map[string]any) string {
+	if t := pickTool(clientTools, "Shell", "shell_command", "run_terminal_cmd", "run_terminal_command", "shell", "exec", "local_shell"); t != "" {
+		return t
+	}
+	return pickToolByHint(clientTools, "shell", "terminal", "command", "exec", "bash")
+}
+
+func pickGlobTool(clientTools []map[string]any) string {
+	if t := pickTool(clientTools, "Glob", "glob", "glob_file_search", "list_dir", "list_files", "list_mcp_resources"); t != "" {
+		return t
+	}
+	return pickToolByHint(clientTools, "glob", "list", "dir", "search", "find_file")
+}
+
+func pickReadTool(clientTools []map[string]any) string {
+	if t := pickTool(clientTools, "Read", "read", "read_file", "read_mcp_resource"); t != "" {
+		return t
+	}
+	return pickToolByHint(clientTools, "read", "file", "resource")
 }
 
 func makeToolCall(name string, args map[string]any) map[string]any {
@@ -189,21 +223,18 @@ func looksLikeExploreTask(text string) bool {
 	return false
 }
 
-func bootstrapExploreToolCalls(messages []ChatMessage, notionText string, clientTools []map[string]any) []map[string]any {
-	if !LooksLikeToolDenial(notionText) && strings.TrimSpace(notionText) != "" {
-		return nil
-	}
+func buildExploreToolCalls(messages []ChatMessage, clientTools []map[string]any) []map[string]any {
 	request := ExtractLastUserMessage(messages)
 	if request == "" {
 		return nil
 	}
-	if !looksLikeExploreTask(request) && !looksLikeExploreTask(notionText) {
+	if !looksLikeExploreTask(request) {
 		return nil
 	}
 
-	globTool := pickTool(clientTools, "Glob", "glob", "glob_file_search", "list_dir", "list_files")
-	shellTool := pickTool(clientTools, "Shell", "run_terminal_cmd", "run_terminal_command", "shell", "exec")
-	readTool := pickTool(clientTools, "Read", "read", "read_file")
+	globTool := pickGlobTool(clientTools)
+	shellTool := pickShellTool(clientTools)
+	readTool := pickReadTool(clientTools)
 
 	path := extractPathFromRequest(request)
 	if globTool != "" {
@@ -232,6 +263,22 @@ func bootstrapExploreToolCalls(messages []ChatMessage, notionText string, client
 		return []map[string]any{makeToolCall(readTool, map[string]any{"path": path})}
 	}
 	return nil
+}
+
+func bootstrapExploreToolCalls(messages []ChatMessage, notionText string, clientTools []map[string]any) []map[string]any {
+	if !LooksLikeToolDenial(notionText) && strings.TrimSpace(notionText) != "" {
+		return nil
+	}
+	return buildExploreToolCalls(messages, clientTools)
+}
+
+// PreemptiveAgentToolCalls returns tool_calls before calling Notion when the client
+// still needs filesystem exploration (Codex first turn on analyze/list tasks).
+func PreemptiveAgentToolCalls(messages []ChatMessage, clientTools []map[string]any) []map[string]any {
+	if conversationHasToolHistory(messages) {
+		return nil
+	}
+	return buildExploreToolCalls(messages, clientTools)
 }
 
 func bootstrapScaffoldToolCalls(messages []ChatMessage, notionText string, clientTools []map[string]any) []map[string]any {
@@ -288,6 +335,17 @@ func CompileAgentToolCalls(
 		return "", nil
 	}
 	return notionText, nil
+}
+
+func ToolCallNames(toolCalls []map[string]any) []string {
+	var names []string
+	for _, tc := range NormalizeToolCalls(toolCalls) {
+		fn, _ := tc["function"].(map[string]any)
+		if name := stringVal(fn["name"]); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func truncateForTool(s string, n int) string {
