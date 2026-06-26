@@ -44,7 +44,7 @@ func BuildConfigValue(notionModel string, isSubsequent, ideAgentMode bool) map[s
 		"enableMailNotificationPreferences": false, "enableMailAgentMultiProviderSupport": false,
 		"useRulePrioritization": true, "availableConnectors": []any{},
 		"customConnectorInfo": []any{}, "searchScopes": []any{map[string]string{"type": "everything"}},
-		"useWebSearch": true, "isHipaa": false, "internetAccess": false,
+		"useWebSearch": true, "isHipaa": false, "internetAccess": true,
 		"useReadOnlyMode": false, "writerMode": false, "isCustomAgent": false,
 		"model": notionModel, "isCustomAgentBuilder": false, "isAgentResearchRequest": false,
 		"useCustomAgentDraft": false, "use_draft_actor_pointer": false,

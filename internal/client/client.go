@@ -108,7 +108,7 @@ func (c *NotionAIClient) prepare(prompt, system, model, threadID, latestUser str
 	if reuseThreadID != "" && prior != nil {
 		updatedIDs := append(append([]string{}, prior.UpdatedConfigIDs...), transcript.NewUUID())
 		transcriptData = transcript.BuildPartialTranscript(
-			c.Account, latestUser, notionModel,
+			c.Account, joined, notionModel,
 			prior.ConfigID, prior.ContextID, prior.OriginalDatetime,
 			updatedIDs, ideAgentMode,
 		)
@@ -263,6 +263,7 @@ func (c *NotionAIClient) runInference(
 	}
 	content, toolCalls := tools.MergeToolCalls(rawText, result.ToolCalls, toolsActive, clientTools, prompt, ideAgentMode)
 	if content == "" && len(toolCalls) == 0 {
+		log.Printf("Notion inference empty (%s)", parser.DebugSummary())
 		if ideAgentMode {
 			return &ChatResult{
 				Text: "", ThreadID: prep.activeThreadID,

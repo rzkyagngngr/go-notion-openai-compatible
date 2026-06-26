@@ -50,12 +50,14 @@ type StreamParser struct {
 	outputTokens    int
 	notionModel     string
 	lineCount       int
+	jsonFailures    int
 	eventTypeCounts map[string]int
 	toolCalls       []map[string]any
 	valueTypes      map[string]string
 	valueCounts     map[string]int
 	sectionCount    int
 	toolUseState    map[string]map[string]any
+	sampleLines     []string
 }
 
 func NewStreamParser() *StreamParser {
@@ -99,18 +101,55 @@ func (p *StreamParser) collectBlocks(kind string) string {
 
 func (p *StreamParser) SetText(v string) { p.storedText = v }
 
-func (p *StreamParser) FeedLine(line string) error {
+func normalizeNDJSONLine(line string) string {
 	line = strings.TrimSpace(line)
+	for strings.HasPrefix(line, "data:") {
+		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	}
+	if line == "[DONE]" {
+		return ""
+	}
+	return line
+}
+
+func (p *StreamParser) noteSample(line string) {
+	if len(p.sampleLines) >= 4 {
+		return
+	}
+	if len(line) > 240 {
+		line = line[:240] + "..."
+	}
+	p.sampleLines = append(p.sampleLines, line)
+}
+
+func (p *StreamParser) DebugSummary() string {
+	return fmt.Sprintf("lines=%d json_failures=%d events=%v samples=%v sections=%d blocks=%d stored=%q",
+		p.lineCount, p.jsonFailures, p.eventTypeCounts, p.sampleLines, p.sectionCount,
+		len(p.blockContents), truncateSample(p.storedText, 80))
+}
+
+func truncateSample(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
+func (p *StreamParser) FeedLine(line string) error {
+	line = normalizeNDJSONLine(line)
 	if line == "" {
 		return nil
 	}
 	p.lineCount++
 	var event map[string]any
 	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		p.jsonFailures++
+		p.noteSample(line)
 		return nil
 	}
 	eventType, _ := event["type"].(string)
 	if eventType == "" {
+		p.noteSample(line)
 		return nil
 	}
 	p.eventTypeCounts[eventType]++
@@ -536,7 +575,9 @@ func (p *StreamParser) absorbInlineSection(sectionIdx int, section map[string]an
 	if values == nil {
 		return
 	}
-	if sectionType != "agent-inference" && sectionType != "agent-reply" && sectionType != "assistant-reply" {
+	switch sectionType {
+	case "agent-inference", "agent-reply", "assistant-reply", "workflow", "inference":
+	default:
 		return
 	}
 	prefix := fmt.Sprintf("/s/%d", sectionIdx)
