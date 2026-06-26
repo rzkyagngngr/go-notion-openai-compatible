@@ -9,6 +9,7 @@ services:
       NOTIONCHAT_HOST: "0.0.0.0"
       NOTIONCHAT_PORT: "8787"
       NOTIONCHAT_API_KEY: "${NOTIONCHAT_API_KEY:-sk-notionchat}"
+      NOTIONCHAT_CLIENT_OS: "windows"
     volumes:
       - notionchat-data:/app/data
       - notionchat-threads:/app/threads

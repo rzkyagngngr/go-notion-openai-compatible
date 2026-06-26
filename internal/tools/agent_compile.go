@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+
+	"github.com/mughu-id/notionchat/internal/config"
 )
 
 var (
@@ -87,19 +89,48 @@ func pickExploreTool(clientTools []map[string]any) string {
 	return ""
 }
 
-func buildExploreArgs(toolName, path string) map[string]any {
+func isWindowsContext(messages []ChatMessage, path string) bool {
+	if strings.EqualFold(config.Get().ClientOS, "windows") {
+		return true
+	}
+	if path != "" && (strings.Contains(path, "\\") || strings.Contains(path, ":")) {
+		return true
+	}
+	for _, msg := range messages {
+		text := extractText(msg.Content)
+		if winPathRe.MatchString(text) || strings.Contains(text, "\\") {
+			return true
+		}
+		lower := strings.ToLower(text)
+		if strings.Contains(lower, "windows") || strings.Contains(lower, "powershell") {
+			return true
+		}
+	}
+	return runtime.GOOS == "windows"
+}
+
+func windowsListCommand(path string) string {
+	if path != "" {
+		return `Get-ChildItem -Force "` + path + `"`
+	}
+	return "Get-ChildItem -Force"
+}
+
+func unixListCommand(path string) string {
+	if path != "" {
+		return `ls -la "` + path + `"`
+	}
+	return "ls -la"
+}
+
+func buildExploreArgs(toolName, path string, messages []ChatMessage) map[string]any {
 	lower := strings.ToLower(toolName)
+	windows := isWindowsContext(messages, path)
 	switch {
 	case strings.Contains(lower, "shell") || strings.Contains(lower, "command") || lower == "exec":
-		cmd := "ls -la"
-		if path != "" {
-			if strings.Contains(path, ":") || strings.Contains(path, "\\") {
-				cmd = `Get-ChildItem -Force "` + path + `"`
-			} else {
-				cmd = `ls -la "` + path + `"`
-			}
-		} else if runtime.GOOS == "windows" {
-			cmd = "Get-ChildItem -Force"
+		cmd := unixListCommand(path)
+		if windows {
+			cmd = windowsListCommand(path)
 		}
 		return map[string]any{"command": cmd, "description": "List project files for codebase analysis"}
 	case strings.Contains(lower, "list_dir"):
@@ -285,7 +316,8 @@ func buildExploreToolCalls(messages []ChatMessage, clientTools []map[string]any)
 
 	path := extractPathFromRequest(request)
 	if tool := pickExploreTool(clientTools); tool != "" {
-		return []map[string]any{makeToolCall(tool, buildExploreArgs(tool, path))}
+		calls := []map[string]any{makeToolCall(tool, buildExploreArgs(tool, path, messages))}
+		return SanitizeExploreToolCalls(messages, calls, clientTools)
 	}
 	if readTool := pickReadTool(clientTools); readTool != "" && path != "" {
 		return []map[string]any{makeToolCall(readTool, map[string]any{"path": path})}
@@ -305,13 +337,76 @@ func isEmptyMCPToolResult(content string) bool {
 	return strings.Contains(lower, `"resources":[]`) || strings.Contains(lower, `"resources": []`)
 }
 
+func isFailedShellResult(content string) bool {
+	lower := strings.ToLower(content)
+	return strings.Contains(lower, "namedparameternotfound") ||
+		strings.Contains(lower, "fullyqualifiederrorid") ||
+		strings.Contains(lower, "is not recognized") ||
+		(strings.Contains(lower, "parameter") && strings.Contains(lower, "cannot be found"))
+}
+
+func fixShellCommandArgs(args map[string]any, messages []ChatMessage, path string) map[string]any {
+	cmd, _ := args["command"].(string)
+	if cmd == "" {
+		return args
+	}
+	if !isWindowsContext(messages, path) {
+		return args
+	}
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	if strings.HasPrefix(lower, "ls") || strings.Contains(lower, "ls -") {
+		out := map[string]any{}
+		for k, v := range args {
+			out[k] = v
+		}
+		out["command"] = windowsListCommand(path)
+		return out
+	}
+	return args
+}
+
+// SanitizeExploreToolCalls rewrites MCP/wrong explore tool_calls into shell_command with OS-correct listing.
+func SanitizeExploreToolCalls(messages []ChatMessage, toolCalls []map[string]any, clientTools []map[string]any) []map[string]any {
+	if len(toolCalls) == 0 {
+		return toolCalls
+	}
+	path := extractPathFromRequest(ExtractLastUserMessage(messages))
+	shellTool := pickShellTool(clientTools)
+	var out []map[string]any
+	for _, tc := range NormalizeToolCalls(toolCalls) {
+		fn, _ := tc["function"].(map[string]any)
+		name := stringVal(fn["name"])
+		argsRaw := stringVal(fn["arguments"])
+		var args map[string]any
+		_ = json.Unmarshal([]byte(argsRaw), &args)
+		if args == nil {
+			args = map[string]any{}
+		}
+
+		if isMCPTool(name) || (name != "" && strings.Contains(strings.ToLower(argsRaw), "glob_pattern")) {
+			if shellTool != "" {
+				out = append(out, makeToolCall(shellTool, buildExploreArgs(shellTool, path, messages)))
+				continue
+			}
+		}
+
+		if strings.Contains(strings.ToLower(name), "shell") || strings.Contains(strings.ToLower(name), "command") {
+			fixed := fixShellCommandArgs(args, messages, path)
+			out = append(out, makeToolCall(name, fixed))
+			continue
+		}
+		out = append(out, tc)
+	}
+	return dedupeToolCalls(out)
+}
+
 func conversationHasUsefulToolResults(messages []ChatMessage) bool {
 	for _, msg := range messages {
 		if msg.Role != "tool" {
 			continue
 		}
 		text := strings.TrimSpace(extractText(msg.Content))
-		if text == "" || isEmptyMCPToolResult(text) {
+		if text == "" || isEmptyMCPToolResult(text) || isFailedShellResult(text) {
 			continue
 		}
 		return true
@@ -366,11 +461,11 @@ func CompileAgentToolCalls(
 
 	collected = dedupeToolCalls(collected)
 	if len(collected) > 0 {
-		return content, collected
+		return content, SanitizeExploreToolCalls(messages, collected, clientTools)
 	}
 
 	if shells := synthesizeShellToolCalls(text, clientTools); len(shells) > 0 {
-		return "", shells
+		return "", SanitizeExploreToolCalls(messages, shells, clientTools)
 	}
 	if explore := bootstrapExploreToolCalls(messages, text, clientTools); len(explore) > 0 {
 		return "", explore

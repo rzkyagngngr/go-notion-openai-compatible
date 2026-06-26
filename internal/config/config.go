@@ -14,7 +14,8 @@ const (
 	DefaultModel   = "ambrosia-tart-high"
 	DefaultAccount = "notion_account.json"
 	DefaultThreads = "threads"
-	DefaultSession = "data/session.json"
+	DefaultSession  = "data/session.json"
+	DefaultClientOS = "windows"
 )
 
 // Settings holds server-only configuration. Notion credentials live in credentials.Store.
@@ -27,6 +28,7 @@ type Settings struct {
 	SessionFile    string
 	BaseURL        string
 	DefaultModel   string
+	ClientOS       string // codex/cursor runtime: windows | linux | darwin
 }
 
 var (
@@ -47,6 +49,7 @@ func Load() *Settings {
 		SessionFile:    getenv("NOTIONCHAT_SESSION_FILE", DefaultSession),
 		BaseURL:        strings.TrimRight(getenv("NOTIONCHAT_NOTION_BASE_URL", DefaultBaseURL), "/"),
 		DefaultModel:   getenv("NOTIONCHAT_DEFAULT_MODEL", DefaultModel),
+		ClientOS:       strings.ToLower(getenv("NOTIONCHAT_CLIENT_OS", DefaultClientOS)),
 	}
 	settings = s
 	return s

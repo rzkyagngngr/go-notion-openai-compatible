@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -59,6 +60,30 @@ func TestPreemptiveSkipsAfterToolHistory(t *testing.T) {
 	}
 	if calls := PreemptiveAgentToolCalls(msgs, CodexFallbackTools()); len(calls) != 0 {
 		t.Fatalf("expected no preemptive after tool history, got %v", calls)
+	}
+}
+
+func TestExploreUsesPowerShellOnWindows(t *testing.T) {
+	msgs := []ChatMessage{{Role: "user", Content: "analisa C:\\Users\\test\\poly-scan"}}
+	calls := buildExploreToolCalls(msgs, CodexFallbackTools())
+	if len(calls) == 0 {
+		t.Fatal("expected tool call")
+	}
+	fn, _ := calls[0]["function"].(map[string]any)
+	var args map[string]any
+	_ = json.Unmarshal([]byte(stringVal(fn["arguments"])), &args)
+	cmd := stringVal(args["command"])
+	if !strings.Contains(cmd, "Get-ChildItem") {
+		t.Fatalf("expected PowerShell list command, got %q", cmd)
+	}
+}
+
+func TestSanitizeMCPToolToShell(t *testing.T) {
+	msgs := []ChatMessage{{Role: "user", Content: "analisa codebase"}}
+	in := []map[string]any{makeToolCall("list_mcp_resources", map[string]any{"glob_pattern": "**/*"})}
+	out := SanitizeExploreToolCalls(msgs, in, CodexFallbackTools())
+	if len(out) == 0 || ToolCallNames(out)[0] != "shell_command" {
+		t.Fatalf("expected shell_command, got %v", ToolCallNames(out))
 	}
 }
 

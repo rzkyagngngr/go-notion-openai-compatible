@@ -208,6 +208,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	if toolsActive {
 		if preempt := tools.PreemptiveAgentToolCalls(req.Messages, normalizedTools); len(preempt) > 0 {
+			preempt = tools.SanitizeExploreToolCalls(req.Messages, preempt, normalizedTools)
 			log.Printf("preemptive tool_calls=%v", tools.ToolCallNames(preempt))
 			if useStream {
 				s.streamToolCalls(w, &req, preempt)
