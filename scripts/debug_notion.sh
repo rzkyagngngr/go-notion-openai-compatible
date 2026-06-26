@@ -6,8 +6,18 @@ COOKIE=$(python3 -c "import json; print(json.load(open('$ACCOUNT'))['full_cookie
 SPACE=$(python3 -c "import json; print(json.load(open('$ACCOUNT'))['space_id'])")
 USER=$(python3 -c "import json; print(json.load(open('$ACCOUNT'))['user_id'])")
 
-echo "=== infer body head ==="
-head -c 1500 "$BODY"
+echo "=== infer body config ==="
+python3 - <<'PY'
+import json
+b = json.load(open("/tmp/infer_body.json"))
+cfg = [t for t in b["transcript"] if t["type"] == "config"][0]["value"]
+ctx = [t for t in b["transcript"] if t["type"] == "context"][0]["value"]
+print("model", cfg.get("model"))
+print("internetAccess", cfg.get("internetAccess"))
+print("useWebSearch", cfg.get("useWebSearch"))
+print("userName", repr(ctx.get("userName")))
+print("spaceName", repr(ctx.get("spaceName")))
+PY
 echo
 echo "=== getAvailableModels ==="
 curl -s -w '\nbytes:%{size_download} code:%{http_code}\n' \
