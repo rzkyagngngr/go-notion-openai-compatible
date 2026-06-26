@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
+	"time"
 
 	"github.com/mughu-id/notionchat/internal/account"
 	"github.com/mughu-id/notionchat/internal/client"
@@ -35,7 +38,9 @@ func main() {
 	body := transcript.BuildInferenceRequest(acc, transcriptData, threadID, true, false, "")
 
 	b, _ := json.Marshal(body)
+	_ = os.WriteFile("/tmp/infer_body.json", b, 0o600)
 	fmt.Printf("request_bytes=%d space_id=%s user_id=%s user_name=%q\n", len(b), acc.SpaceID, acc.UserID, acc.UserName)
+	fmt.Printf("wrote /tmp/infer_body.json\n")
 
 	httpClient, err := notionhttp.NewClient()
 	if err != nil {
@@ -77,5 +82,31 @@ func main() {
 		if len(raw) > 0 && len(raw) <= 128 {
 			fmt.Printf("response_hex=%s\n", hex.EncodeToString(raw))
 		}
+	}
+
+	fmt.Printf("\n--- net_http ---\n")
+	std := &http.Client{Timeout: 120 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
+	if err != nil {
+		log.Fatal(err)
+	}
+	hdr := client.BuildHeaders(acc, "")
+	delete(hdr, "accept-encoding")
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	resp, err := std.Do(req)
+	if err != nil {
+		log.Fatalf("net/http: %v", err)
+	}
+	defer resp.Body.Close()
+	fmt.Printf("status=%d content-encoding=%q\n", resp.StatusCode, resp.Header.Get("Content-Encoding"))
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalf("net/http read: %v", err)
+	}
+	fmt.Printf("response_bytes=%d text=%q\n", len(raw), string(raw))
+	if len(raw) > 0 && len(raw) <= 128 {
+		fmt.Printf("response_hex=%s\n", hex.EncodeToString(raw))
 	}
 }
