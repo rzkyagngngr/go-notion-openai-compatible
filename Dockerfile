@@ -1,4 +1,4 @@
-FROM golang:1.22-bookworm AS builder
+FROM golang:1.22-alpine AS builder
 
 WORKDIR /src
 
@@ -8,12 +8,14 @@ RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 
-RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o /notionchat ./cmd/notionchat
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /notionchat ./cmd/notionchat
 
-FROM golang:1.22-bookworm
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata \
+	&& mkdir -p /app/data /app/threads
 
 WORKDIR /app
-RUN mkdir -p /app/data /app/threads
 
 COPY --from=builder /notionchat /app/notionchat
 
