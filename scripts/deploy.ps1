@@ -1,10 +1,14 @@
-# Deploy cepat ke server (SSH tunnel mpds@127.0.0.1)
+# Deploy cepat via PuTTY plink (non-interaktif)
 # Usage: .\scripts\deploy.ps1
 param(
-    [string]$Host = "mpds@127.0.0.1",
+    [string]$Plink = "C:\Program Files\PuTTY\plink.exe",
+    [string]$User = "mpds@localhost",
+    [string]$Password = "mpds",
     [string]$Repo = "/home/Code/project/go-notion-openai-compatible"
 )
 
-$cmd = "cd $Repo && git pull --ff-only && docker compose up -d --build && docker compose ps notionchat && docker compose logs --tail=8 notionchat"
-Write-Host "Deploying to $Host ..."
-ssh $Host $cmd
+$remote = "cd $Repo && git pull --ff-only origin main && docker compose up -d --build && docker compose ps notionchat && curl -s http://127.0.0.1:8787/healthz"
+Write-Host "git push (local) ..."
+git push origin main
+Write-Host "Deploy via plink -> $User ..."
+echo y | & $Plink -ssh $User -pw $Password -batch $remote
