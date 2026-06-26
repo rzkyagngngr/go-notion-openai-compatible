@@ -227,10 +227,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	s.ensureModelAliases(c, settings)
 
-	if toolsActive {
+	if toolsActive && tools.NeedsAgentTooling(req.Messages) {
 		exploreKey := s.exploreKey(req.User, sessionKey)
-		preempt := tools.PreemptiveAgentToolCalls(req.Messages, normalizedTools)
-		preempt = tools.SanitizeExploreToolCalls(req.Messages, preempt, normalizedTools)
+		preempt := tools.AgentFallbackToolCalls(req.Messages, normalizedTools)
 		if len(preempt) > 0 && tools.ExploreToolCallsIssued(preempt) && s.exploreAlreadyDone(exploreKey) {
 			preempt = nil
 		}
@@ -260,6 +259,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	result = s.bridgeIDEAgent(result, &req, normalizedTools, prompt, ideAgent, toolsActive, c, system)
 
+	if toolsActive && len(result.ToolCalls) == 0 && strings.TrimSpace(result.Text) == "" && tools.NeedsAgentTooling(req.Messages) {
+		if fallback := tools.AgentFallbackToolCalls(req.Messages, normalizedTools); len(fallback) > 0 {
+			result.ToolCalls = fallback
+			result.Text = ""
+		}
+	}
+
 	if !ideAgent && !toolsActive {
 		s.rememberThread(sessionKey, result.ThreadID, req.Model, req.Messages)
 	}
@@ -267,6 +273,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	finishReason := "stop"
 	if len(result.ToolCalls) > 0 {
 		finishReason = "tool_calls"
+	}
+	if finishReason == "stop" && strings.TrimSpace(result.Text) == "" && toolsActive {
+		result.Text = "Menunggu hasil tool untuk analisa..."
 	}
 	writeJSON(w, map[string]any{
 		"id":      "chatcmpl-" + uuid.New().String()[:24],
@@ -354,20 +363,26 @@ func (s *Server) streamResponse(
 				s.markExploreDone(s.exploreKey(req.User, sessionKey))
 			}
 			emitToolCallChunks(w, flusher, completionID, created, req.Model, result.ToolCalls)
+		} else if fallback := tools.AgentFallbackToolCalls(req.Messages, normalizedTools); len(fallback) > 0 {
+			emitToolCallChunks(w, flusher, completionID, created, req.Model, fallback)
 		} else {
-			writeChunk(w, completionID, created, req.Model, map[string]any{}, strPtr("stop"))
+			s.emitStreamText(w, flusher, completionID, created, req.Model, s.fallbackAgentText(result))
 		}
-	} else if toolsActive && tools.LooksLikeToolDenial(strings.Join(buffered, "")) {
+	} else if toolsActive && (tools.LooksLikeToolDenial(strings.Join(buffered, "")) || (result != nil && strings.TrimSpace(result.Text) == "" && len(buffered) == 0)) {
 		exploreKey := s.exploreKey(req.User, sessionKey)
-		if !s.exploreAlreadyDone(exploreKey) {
-			if preempt := tools.SanitizeExploreToolCalls(req.Messages, tools.PreemptiveAgentToolCalls(req.Messages, normalizedTools), normalizedTools); len(preempt) > 0 {
+		preempt := tools.AgentFallbackToolCalls(req.Messages, normalizedTools)
+		if len(preempt) > 0 && tools.ExploreToolCallsIssued(preempt) && s.exploreAlreadyDone(exploreKey) {
+			preempt = nil
+		}
+		if len(preempt) > 0 {
+			if tools.ExploreToolCallsIssued(preempt) {
 				s.markExploreDone(exploreKey)
-				emitToolCallChunks(w, flusher, completionID, created, req.Model, preempt)
-			} else {
-				writeChunk(w, completionID, created, req.Model, map[string]any{}, strPtr("stop"))
 			}
+			emitToolCallChunks(w, flusher, completionID, created, req.Model, preempt)
+		} else if result != nil && strings.TrimSpace(result.Text) != "" {
+			s.emitStreamText(w, flusher, completionID, created, req.Model, result.Text)
 		} else {
-			writeChunk(w, completionID, created, req.Model, map[string]any{}, strPtr("stop"))
+			s.emitStreamText(w, flusher, completionID, created, req.Model, "Menunggu hasil tool untuk analisa...")
 		}
 	} else {
 		pieces := buffered
@@ -596,6 +611,23 @@ func emitToolCallChunks(
 		}
 	}
 	writeChunk(w, completionID, created, model, map[string]any{}, strPtr("tool_calls"))
+	flusher.Flush()
+}
+
+func (s *Server) fallbackAgentText(result *client.ChatResult) string {
+	if result != nil && strings.TrimSpace(result.Text) != "" {
+		return result.Text
+	}
+	return "Menunggu hasil tool untuk analisa..."
+}
+
+func (s *Server) emitStreamText(w http.ResponseWriter, flusher http.Flusher, completionID string, created int64, model, text string) {
+	if strings.TrimSpace(text) == "" {
+		text = "Menunggu hasil tool untuk analisa..."
+	}
+	writeChunk(w, completionID, created, model, map[string]any{"content": text}, nil)
+	flusher.Flush()
+	writeChunk(w, completionID, created, model, map[string]any{}, strPtr("stop"))
 	flusher.Flush()
 }
 

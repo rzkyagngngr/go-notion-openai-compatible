@@ -311,16 +311,29 @@ func isScaffoldShellCommand(cmd string) bool {
 		strings.Contains(lower, "yarn create")
 }
 
+func fileReadShellCommand(path string, messages []ChatMessage) string {
+	if isWindowsContext(messages, path) {
+		return `Get-Content -Raw "` + path + `"`
+	}
+	return `cat "` + path + `"`
+}
+
 func buildReadToolCall(path string, clientTools []map[string]any, messages []ChatMessage) []map[string]any {
 	readTool := pickReadTool(clientTools)
-	if readTool == "" {
-		return nil
+	if readTool != "" {
+		args := map[string]any{"path": path}
+		if strings.Contains(strings.ToLower(readTool), "mcp") {
+			args = map[string]any{"uri": path, "path": path}
+		}
+		return []map[string]any{makeToolCall(readTool, args)}
 	}
-	args := map[string]any{"path": path}
-	if strings.Contains(strings.ToLower(readTool), "mcp") {
-		args = map[string]any{"uri": path, "path": path}
+	if shell := pickShellTool(clientTools); shell != "" {
+		return []map[string]any{makeToolCall(shell, map[string]any{
+			"command":     fileReadShellCommand(path, messages),
+			"description": "Read file for analysis: " + path,
+		})}
 	}
-	return []map[string]any{makeToolCall(readTool, args)}
+	return nil
 }
 
 func shouldPreemptiveRead(messages []ChatMessage) (string, bool) {
@@ -337,17 +350,26 @@ func shouldPreemptiveRead(messages []ChatMessage) (string, bool) {
 
 func conversationHasFileReadResult(messages []ChatMessage, path string) bool {
 	needle := strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	base := needle
+	if idx := strings.LastIndexAny(needle, `/\`); idx >= 0 {
+		base = needle[idx+1:]
+	}
 	for _, msg := range messages {
 		if msg.Role != "tool" {
 			continue
 		}
 		text := extractText(msg.Content)
-		if len(text) < 40 {
+		if len(text) < 80 {
 			continue
 		}
-		if strings.Contains(strings.ToLower(text), needle) ||
-			strings.Contains(text, "func ") || strings.Contains(text, "package ") ||
-			strings.Contains(text, "import ") {
+		lower := strings.ToLower(text)
+		mentionsPath := strings.Contains(lower, needle) || (base != "" && strings.Contains(lower, base))
+		if !mentionsPath {
+			continue
+		}
+		if strings.Contains(text, "{") || strings.Contains(text, "func ") ||
+			strings.Contains(text, "package ") || strings.Contains(text, "import ") ||
+			strings.Contains(text, "class ") || strings.Count(text, "\n") >= 5 {
 			return true
 		}
 	}
@@ -549,6 +571,22 @@ func conversationHasUsefulToolResults(messages []ChatMessage) bool {
 		return true
 	}
 	return false
+}
+
+// NeedsAgentTooling reports whether this request still needs a local tool round-trip.
+func NeedsAgentTooling(messages []ChatMessage) bool {
+	if _, ok := shouldPreemptiveRead(messages); ok {
+		return true
+	}
+	return ShouldExploreBootstrap(messages)
+}
+
+// AgentFallbackToolCalls always returns a concrete tool for explore/read tasks when possible.
+func AgentFallbackToolCalls(messages []ChatMessage, clientTools []map[string]any) []map[string]any {
+	if calls := PreemptiveAgentToolCalls(messages, clientTools); len(calls) > 0 {
+		return SanitizeExploreToolCalls(messages, calls, clientTools)
+	}
+	return nil
 }
 
 // PreemptiveAgentToolCalls returns tool_calls before calling Notion when the client

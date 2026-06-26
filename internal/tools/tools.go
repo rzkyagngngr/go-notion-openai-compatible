@@ -293,6 +293,10 @@ func SessionKeyFromMessages(user, apiKey string, messages []ChatMessage) string 
 func PrepareChatInput(messages []ChatMessage, tools []map[string]any, toolChoice any) (system, prompt string, toolsActive, ideAgent bool, normalized []map[string]any, err error) {
 	normalized = InferClientTools(messages, tools)
 	toolsActive = len(normalized) > 0 && toolChoice != "none"
+	if !toolsActive && looksLikeExploreTask(ExtractLastUserMessage(messages)) {
+		normalized = InferClientTools(messages, tools)
+		toolsActive = len(normalized) > 0
+	}
 	ideAgent = toolsActive
 
 	var systemParts []string
