@@ -1,8 +1,6 @@
 FROM golang:1.22-bookworm AS builder
 
 WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev git \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
 RUN go mod download
@@ -12,10 +10,7 @@ COPY internal/ ./internal/
 
 RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o /notionchat ./cmd/notionchat
 
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+FROM golang:1.22-bookworm
 
 WORKDIR /app
 RUN mkdir -p /app/data /app/threads
