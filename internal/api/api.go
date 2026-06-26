@@ -26,7 +26,7 @@ type Server struct {
 	sessionThreads map[string]string
 	sessionModels  map[string]string
 	exploreDone    map[string]bool
-	readIssued     map[string]bool
+	readPending    map[string]bool
 	fileReadCache  map[string]string
 	mu             sync.Mutex
 }
@@ -38,7 +38,7 @@ func NewServer(settings *config.Settings, creds *credentials.Store) *Server {
 		sessionThreads: make(map[string]string),
 		sessionModels:  make(map[string]string),
 		exploreDone:    make(map[string]bool),
-		readIssued:     make(map[string]bool),
+		readPending:    make(map[string]bool),
 		fileReadCache:  make(map[string]string),
 	}
 }
@@ -66,16 +66,16 @@ func (s *Server) readKey(sessionKey, path string) string {
 	return sessionKey + "::" + tools.NormalizeFilePath(path)
 }
 
-func (s *Server) readAlreadyIssued(sessionKey, path string) bool {
+func (s *Server) readIsPending(sessionKey, path string) bool {
 	if path == "" {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.readIssued[s.readKey(sessionKey, path)]
+	return s.readPending[s.readKey(sessionKey, path)]
 }
 
-func (s *Server) markReadIssued(sessionKey string, paths []string) {
+func (s *Server) markReadPending(sessionKey string, paths []string) {
 	if len(paths) == 0 {
 		return
 	}
@@ -85,8 +85,17 @@ func (s *Server) markReadIssued(sessionKey string, paths []string) {
 		if path == "" {
 			continue
 		}
-		s.readIssued[s.readKey(sessionKey, path)] = true
+		s.readPending[s.readKey(sessionKey, path)] = true
 	}
+}
+
+func (s *Server) clearReadPending(sessionKey, path string) {
+	if path == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.readPending, s.readKey(sessionKey, path))
 }
 
 func (s *Server) storeFileReads(sessionKey string, reads map[string]string) {
@@ -99,7 +108,9 @@ func (s *Server) storeFileReads(sessionKey string, reads map[string]string) {
 		if content == "" {
 			continue
 		}
-		s.fileReadCache[sessionKey+"::"+normPath] = content
+		key := sessionKey + "::" + normPath
+		s.fileReadCache[key] = content
+		delete(s.readPending, key)
 	}
 }
 
@@ -127,10 +138,43 @@ func (s *Server) prepareAgentMessages(sessionKey string, messages []tools.ChatMe
 	return messages
 }
 
-func (s *Server) readIssuedChecker(sessionKey string) func(string) bool {
+func (s *Server) readPendingChecker(sessionKey string) func(string) bool {
 	return func(path string) bool {
-		return s.readAlreadyIssued(sessionKey, path)
+		return s.readIsPending(sessionKey, path)
 	}
+}
+
+func (s *Server) writeAwaitingToolRead(w http.ResponseWriter, req *chatRequest, useStream bool) {
+	msg := "Menunggu hasil tool untuk analisa..."
+	if useStream {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeError(w, "streaming not supported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		completionID := "chatcmpl-" + uuid.New().String()[:24]
+		created := time.Now().Unix()
+		writeChunk(w, completionID, created, req.Model, map[string]any{"role": "assistant", "content": ""}, nil)
+		flusher.Flush()
+		s.emitStreamText(w, flusher, completionID, created, req.Model, msg)
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		return
+	}
+	writeJSON(w, map[string]any{
+		"id": "chatcmpl-" + uuid.New().String()[:24], "object": "chat.completion",
+		"created": time.Now().Unix(), "model": req.Model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"message":       map[string]any{"role": "assistant", "content": msg},
+			"finish_reason": "stop",
+		}},
+		"usage": map[string]int{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+	})
 }
 
 func (s *Server) Handler() http.Handler {
@@ -233,6 +277,9 @@ type chatRequest struct {
 }
 
 func wantsStream(req *chatRequest, r *http.Request, toolsActive, ideAgent bool) bool {
+	if req.Stream != nil && !*req.Stream {
+		return false
+	}
 	if toolsActive || ideAgent {
 		return true
 	}
@@ -277,7 +324,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	settings := config.Get()
 	sessionKey := tools.SessionKeyFromMessages(req.User, s.settings.APIKey, req.Messages)
 	agentMessages := s.prepareAgentMessages(sessionKey, req.Messages)
-	readIssued := s.readIssuedChecker(sessionKey)
+	readPending := s.readPendingChecker(sessionKey)
 
 	system, prompt, toolsActive, ideAgent, normalizedTools, err := tools.PrepareChatInput(agentMessages, req.Tools, req.ToolChoice)
 	if err != nil {
@@ -305,9 +352,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	s.ensureModelAliases(c, settings)
 
-	if toolsActive && tools.NeedsAgentToolingWithState(agentMessages, readIssued) {
+	if toolsActive && tools.AwaitingFileReadContent(agentMessages, readPending) {
+		log.Printf("awaiting file read tool results session=%q", sessionKey)
+		s.writeAwaitingToolRead(w, &req, useStream)
+		return
+	}
+
+	if toolsActive && tools.NeedsAgentToolingWithState(agentMessages, readPending) {
 		exploreKey := s.exploreKey(req.User, sessionKey)
-		preempt := tools.AgentFallbackToolCallsWithState(agentMessages, normalizedTools, readIssued)
+		preempt := tools.AgentFallbackToolCallsWithState(agentMessages, normalizedTools, readPending)
 		if len(preempt) > 0 && tools.ExploreToolCallsIssued(preempt) && s.exploreAlreadyDone(exploreKey) {
 			preempt = nil
 		}
@@ -316,7 +369,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				s.markExploreDone(exploreKey)
 			}
 			if tools.ReadToolCallsIssued(preempt) {
-				s.markReadIssued(sessionKey, tools.ReadPathsFromToolCalls(preempt))
+				s.markReadPending(sessionKey, tools.ReadPathsFromToolCalls(preempt))
 			}
 			log.Printf("preemptive tool_calls=%v explore_key=%q", tools.ToolCallNames(preempt), exploreKey)
 			if useStream {
@@ -329,7 +382,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if useStream {
-		s.streamResponse(w, c, &req, agentMessages, system, prompt, threadID, latestUser, sessionKey, settings, toolsActive, ideAgent, normalizedTools, readIssued)
+		s.streamResponse(w, c, &req, agentMessages, system, prompt, threadID, latestUser, sessionKey, settings, toolsActive, ideAgent, normalizedTools, readPending)
 		return
 	}
 
@@ -340,8 +393,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	result = s.bridgeIDEAgent(result, &req, agentMessages, normalizedTools, prompt, ideAgent, toolsActive, c, system)
 
-	if toolsActive && len(result.ToolCalls) == 0 && strings.TrimSpace(result.Text) == "" && tools.NeedsAgentToolingWithState(agentMessages, readIssued) {
-		if fallback := tools.AgentFallbackToolCallsWithState(agentMessages, normalizedTools, readIssued); len(fallback) > 0 {
+	if toolsActive && len(result.ToolCalls) == 0 && strings.TrimSpace(result.Text) == "" && tools.NeedsAgentToolingWithState(agentMessages, readPending) {
+		if fallback := tools.AgentFallbackToolCallsWithState(agentMessages, normalizedTools, readPending); len(fallback) > 0 {
 			result.ToolCalls = fallback
 			result.Text = ""
 		}
@@ -376,7 +429,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) streamResponse(
 	w http.ResponseWriter, c *client.NotionAIClient, req *chatRequest, agentMessages []tools.ChatMessage,
 	system, prompt, threadID, latestUser, sessionKey string, settings *config.Settings,
-	toolsActive, ideAgent bool, normalizedTools []map[string]any, readIssued func(string) bool,
+	toolsActive, ideAgent bool, normalizedTools []map[string]any, readPending func(string) bool,
 ) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -444,17 +497,17 @@ func (s *Server) streamResponse(
 				s.markExploreDone(s.exploreKey(req.User, sessionKey))
 			}
 			if tools.ReadToolCallsIssued(result.ToolCalls) {
-				s.markReadIssued(sessionKey, tools.ReadPathsFromToolCalls(result.ToolCalls))
+				s.markReadPending(sessionKey, tools.ReadPathsFromToolCalls(result.ToolCalls))
 			}
 			emitToolCallChunks(w, flusher, completionID, created, req.Model, result.ToolCalls)
-		} else if fallback := tools.AgentFallbackToolCallsWithState(agentMessages, normalizedTools, readIssued); len(fallback) > 0 {
+		} else if fallback := tools.AgentFallbackToolCallsWithState(agentMessages, normalizedTools, readPending); len(fallback) > 0 {
 			emitToolCallChunks(w, flusher, completionID, created, req.Model, fallback)
 		} else {
 			s.emitStreamText(w, flusher, completionID, created, req.Model, s.fallbackAgentText(result))
 		}
 	} else if toolsActive && (tools.LooksLikeToolDenial(strings.Join(buffered, "")) || (result != nil && strings.TrimSpace(result.Text) == "" && len(buffered) == 0)) {
 		exploreKey := s.exploreKey(req.User, sessionKey)
-		preempt := tools.AgentFallbackToolCallsWithState(agentMessages, normalizedTools, readIssued)
+		preempt := tools.AgentFallbackToolCallsWithState(agentMessages, normalizedTools, readPending)
 		if len(preempt) > 0 && tools.ExploreToolCallsIssued(preempt) && s.exploreAlreadyDone(exploreKey) {
 			preempt = nil
 		}
@@ -463,13 +516,15 @@ func (s *Server) streamResponse(
 				s.markExploreDone(exploreKey)
 			}
 			if tools.ReadToolCallsIssued(preempt) {
-				s.markReadIssued(sessionKey, tools.ReadPathsFromToolCalls(preempt))
+				s.markReadPending(sessionKey, tools.ReadPathsFromToolCalls(preempt))
 			}
 			emitToolCallChunks(w, flusher, completionID, created, req.Model, preempt)
 		} else if result != nil && strings.TrimSpace(result.Text) != "" {
 			s.emitStreamText(w, flusher, completionID, created, req.Model, result.Text)
-		} else {
+		} else if tools.AwaitingFileReadContent(agentMessages, readPending) {
 			s.emitStreamText(w, flusher, completionID, created, req.Model, "Menunggu hasil tool untuk analisa...")
+		} else {
+			s.emitStreamText(w, flusher, completionID, created, req.Model, s.fallbackAgentText(result))
 		}
 	} else {
 		pieces := buffered

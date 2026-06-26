@@ -15,11 +15,19 @@ func TestWantsStreamDefaultTrue(t *testing.T) {
 	}
 }
 
-func TestWantsStreamForceForTools(t *testing.T) {
+func TestWantsStreamRespectsExplicitFalseForTools(t *testing.T) {
 	req := chatRequest{Stream: boolPtr(false)}
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	if wantsStream(&req, r, true, false) {
+		t.Fatal("expected stream=false when client explicitly disables streaming")
+	}
+}
+
+func TestWantsStreamDefaultTrueForTools(t *testing.T) {
+	req := chatRequest{}
+	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	if !wantsStream(&req, r, true, false) {
-		t.Fatal("expected stream forced for toolsActive")
+		t.Fatal("expected default stream=true for tool requests")
 	}
 }
 
@@ -32,10 +40,10 @@ func TestWantsStreamExplicitFalseChatOnly(t *testing.T) {
 }
 
 func TestWantsStreamAcceptHeader(t *testing.T) {
-	req := chatRequest{Stream: boolPtr(false)}
+	req := chatRequest{}
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	r.Header.Set("Accept", "text/event-stream")
 	if !wantsStream(&req, r, false, false) {
-		t.Fatal("expected stream from Accept header")
+		t.Fatal("expected stream from Accept header when stream field omitted")
 	}
 }

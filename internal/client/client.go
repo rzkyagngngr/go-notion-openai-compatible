@@ -66,10 +66,10 @@ type prepareResult struct {
 }
 
 func (c *NotionAIClient) prepare(prompt, system, model, threadID, latestUser string, ideAgentMode bool) (*prepareResult, error) {
-	// Agent mode: only send conversation transcript to Notion — never inject tool schemas
-	// into the user message (Notion rejects them as fake instructions).
+	// Agent mode: send transcript + inline instructions, but never OpenAI tool schemas
+	// (those are stripped in PrepareChatInput before reaching this layer).
 	joined := prompt
-	if !ideAgentMode && system != "" {
+	if system != "" {
 		joined = system + "\n\n" + prompt
 	}
 	if strings.TrimSpace(joined) == "" {
@@ -258,8 +258,18 @@ func (c *NotionAIClient) runInference(
 
 	result := parser.Finalize()
 	rawText := result.Text
+	if rawText == "" && result.Thinking != "" {
+		rawText = result.Thinking
+	}
 	content, toolCalls := tools.MergeToolCalls(rawText, result.ToolCalls, toolsActive, clientTools, prompt, ideAgentMode)
 	if content == "" && len(toolCalls) == 0 {
+		if ideAgentMode {
+			return &ChatResult{
+				Text: "", ThreadID: prep.activeThreadID,
+				Model: chooseStr(result.NotionModel, prep.notionModel),
+				InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
+			}, nil
+		}
 		return nil, errors.New(emptyResponseMessage(result, prep.activeThreadID), 502)
 	}
 	prep.saveState()
@@ -350,8 +360,18 @@ func (c *NotionAIClient) StreamDeltas(prompt, system, model, threadID, latestUse
 		wg.Wait()
 		result := parser.Finalize()
 		rawText := result.Text
+		if rawText == "" && result.Thinking != "" {
+			rawText = result.Thinking
+		}
 		content, toolCalls := tools.MergeToolCalls(rawText, result.ToolCalls, toolsActive, clientTools, prompt, ideAgentMode)
 		if content == "" && len(toolCalls) == 0 {
+			if ideAgentMode {
+				return &ChatResult{
+					Text: "", ThreadID: prep.activeThreadID,
+					Model: chooseStr(result.NotionModel, prep.notionModel),
+					InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
+				}, nil
+			}
 			return nil, errors.New(emptyResponseMessage(result, prep.activeThreadID), 502)
 		}
 		prep.saveState()

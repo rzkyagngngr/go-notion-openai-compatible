@@ -442,19 +442,32 @@ func ReadPathsFromToolCalls(toolCalls []map[string]any) []string {
 	return paths
 }
 
-func shouldPreemptiveRead(messages []ChatMessage, readAlreadyIssued func(string) bool) (string, bool) {
+func shouldPreemptiveRead(messages []ChatMessage, readPending func(string) bool) (string, bool) {
 	request := ExtractLastUserMessage(messages)
 	file := extractFilePathFromRequest(request)
 	if file == "" || !looksLikeExploreTask(request) {
 		return "", false
 	}
-	if readAlreadyIssued != nil && readAlreadyIssued(file) {
-		return "", false
-	}
 	if conversationHasFileReadResult(messages, file) {
 		return "", false
 	}
+	if readPending != nil && readPending(file) {
+		return "", false
+	}
 	return file, true
+}
+
+// AwaitingFileReadContent reports waiting for Codex to return file read tool output.
+func AwaitingFileReadContent(messages []ChatMessage, readPending func(string) bool) bool {
+	request := ExtractLastUserMessage(messages)
+	file := extractFilePathFromRequest(request)
+	if file == "" || !looksLikeExploreTask(request) {
+		return false
+	}
+	if conversationHasFileReadResult(messages, file) {
+		return false
+	}
+	return readPending != nil && readPending(file)
 }
 
 func conversationHasFileReadResult(messages []ChatMessage, path string) bool {
@@ -762,9 +775,9 @@ func NeedsAgentTooling(messages []ChatMessage) bool {
 	return NeedsAgentToolingWithState(messages, nil)
 }
 
-// NeedsAgentToolingWithState is like NeedsAgentTooling but respects server-side read-issued state.
-func NeedsAgentToolingWithState(messages []ChatMessage, readAlreadyIssued func(string) bool) bool {
-	if _, ok := shouldPreemptiveRead(messages, readAlreadyIssued); ok {
+// NeedsAgentToolingWithState is like NeedsAgentTooling but respects server-side read-pending state.
+func NeedsAgentToolingWithState(messages []ChatMessage, readPending func(string) bool) bool {
+	if _, ok := shouldPreemptiveRead(messages, readPending); ok {
 		return true
 	}
 	return ShouldExploreBootstrap(messages)
@@ -775,8 +788,8 @@ func AgentFallbackToolCalls(messages []ChatMessage, clientTools []map[string]any
 	return AgentFallbackToolCallsWithState(messages, clientTools, nil)
 }
 
-func AgentFallbackToolCallsWithState(messages []ChatMessage, clientTools []map[string]any, readAlreadyIssued func(string) bool) []map[string]any {
-	if calls := PreemptiveAgentToolCallsWithState(messages, clientTools, readAlreadyIssued); len(calls) > 0 {
+func AgentFallbackToolCallsWithState(messages []ChatMessage, clientTools []map[string]any, readPending func(string) bool) []map[string]any {
+	if calls := PreemptiveAgentToolCallsWithState(messages, clientTools, readPending); len(calls) > 0 {
 		return SanitizeExploreToolCalls(messages, calls, clientTools)
 	}
 	return nil
@@ -788,8 +801,8 @@ func PreemptiveAgentToolCalls(messages []ChatMessage, clientTools []map[string]a
 	return PreemptiveAgentToolCallsWithState(messages, clientTools, nil)
 }
 
-func PreemptiveAgentToolCallsWithState(messages []ChatMessage, clientTools []map[string]any, readAlreadyIssued func(string) bool) []map[string]any {
-	if file, ok := shouldPreemptiveRead(messages, readAlreadyIssued); ok {
+func PreemptiveAgentToolCallsWithState(messages []ChatMessage, clientTools []map[string]any, readPending func(string) bool) []map[string]any {
+	if file, ok := shouldPreemptiveRead(messages, readPending); ok {
 		if calls := buildReadToolCall(file, clientTools, messages); len(calls) > 0 {
 			return calls
 		}

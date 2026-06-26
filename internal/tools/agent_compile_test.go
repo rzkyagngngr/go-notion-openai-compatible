@@ -177,11 +177,14 @@ func TestFileReadDetectedWithoutPathInOutput(t *testing.T) {
 	}
 }
 
-func TestPreemptiveReadSkipsWhenAlreadyIssued(t *testing.T) {
+func TestPreemptiveReadSkipsWhenPending(t *testing.T) {
 	msgs := []ChatMessage{{Role: "user", Content: "analisa cmd\\server\\main.go"}}
-	issued := func(path string) bool { return path == "cmd\\server\\main.go" }
-	if _, ok := shouldPreemptiveRead(msgs, issued); ok {
-		t.Fatal("expected preemptive read skipped when already issued server-side")
+	pending := func(path string) bool { return path == "cmd\\server\\main.go" }
+	if _, ok := shouldPreemptiveRead(msgs, pending); ok {
+		t.Fatal("expected preemptive read skipped while read is pending")
+	}
+	if !AwaitingFileReadContent(msgs, pending) {
+		t.Fatal("expected awaiting file read content while pending")
 	}
 }
 
