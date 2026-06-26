@@ -33,7 +33,6 @@ func main() {
 	transcriptData := transcript.BuildFullTranscript(acc, "halo", notionModel, configID, contextID, now, false)
 	threadID := transcript.NewUUID()
 	body := transcript.BuildInferenceRequest(acc, transcriptData, threadID, true, false, "")
-	headers := client.BuildHeaders(acc, "")
 
 	b, _ := json.Marshal(body)
 	fmt.Printf("request_bytes=%d space_id=%s user_id=%s user_name=%q\n", len(b), acc.SpaceID, acc.UserID, acc.UserName)
@@ -45,22 +44,38 @@ func main() {
 	defer httpClient.Close()
 
 	url := config.DefaultBaseURL + "/runInferenceTranscript"
-	reader, status, respBody, err := httpClient.PostStream(url, body, headers)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if status != 200 {
-		log.Fatalf("status=%d body=%q", status, respBody)
-	}
-	defer reader.Close()
 
-	raw, err := io.ReadAll(reader)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("response_status=%d response_bytes=%d\n", status, len(raw))
-	fmt.Printf("response_text=%q\n", string(raw))
-	if len(raw) > 0 && len(raw) <= 64 {
-		fmt.Printf("response_hex=%s\n", hex.EncodeToString(raw))
+	for _, tc := range []struct {
+		label string
+		hdr   map[string]string
+	}{
+		{"with_identity", client.BuildHeaders(acc, "")},
+		{"no_identity", func() map[string]string {
+			h := client.BuildHeaders(acc, "")
+			delete(h, "accept-encoding")
+			return h
+		}()},
+	} {
+		fmt.Printf("\n--- %s ---\n", tc.label)
+		reader, status, respBody, err := httpClient.PostStream(url, body, tc.hdr)
+		if err != nil {
+			log.Fatalf("%s transport: %v", tc.label, err)
+		}
+		if status != 200 {
+			fmt.Printf("status=%d body=%q\n", status, respBody)
+			reader.Close()
+			continue
+		}
+		raw, err := io.ReadAll(reader)
+		reader.Close()
+		if err != nil {
+			fmt.Printf("read error: %v\n", err)
+			continue
+		}
+		fmt.Printf("response_status=%d response_bytes=%d\n", status, len(raw))
+		fmt.Printf("response_text=%q\n", string(raw))
+		if len(raw) > 0 && len(raw) <= 128 {
+			fmt.Printf("response_hex=%s\n", hex.EncodeToString(raw))
+		}
 	}
 }
