@@ -277,19 +277,17 @@ type chatRequest struct {
 }
 
 func wantsStream(req *chatRequest, r *http.Request, toolsActive, ideAgent bool) bool {
-	if req.Stream != nil && !*req.Stream {
-		return false
+	if req.Stream != nil {
+		return *req.Stream
 	}
+	// OpenAI default: stream=false. Agent clients that need SSE must send stream:true.
 	if toolsActive || ideAgent {
-		return true
+		return false
 	}
 	if accept := r.Header.Get("Accept"); strings.Contains(accept, "text/event-stream") {
 		return true
 	}
-	if req.Stream != nil {
-		return *req.Stream
-	}
-	return true
+	return false
 }
 
 func streamFieldLabel(stream *bool) string {

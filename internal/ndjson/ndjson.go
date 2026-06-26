@@ -70,21 +70,31 @@ func NewStreamParser() *StreamParser {
 }
 
 func (p *StreamParser) Text() string {
-	if len(p.blockContents) > 0 {
-		var parts []string
-		for sIdx := 0; sIdx < p.sectionCount; sIdx++ {
-			prefix := fmt.Sprintf("/s/%d", sIdx)
-			count := p.valueCounts[prefix]
-			for vIdx := 0; vIdx < count; vIdx++ {
-				path := fmt.Sprintf("%s/value/%d", prefix, vIdx)
-				if p.valueTypes[path] == "text" {
-					parts = append(parts, p.blockContents[path])
-				}
-			}
-		}
-		return strings.Join(parts, "")
+	if text := p.collectBlocks("text"); text != "" {
+		return text
+	}
+	if thinking := p.collectBlocks("thinking"); thinking != "" {
+		return thinking
 	}
 	return p.storedText
+}
+
+func (p *StreamParser) collectBlocks(kind string) string {
+	if len(p.blockContents) == 0 {
+		return ""
+	}
+	var parts []string
+	for sIdx := 0; sIdx < p.sectionCount; sIdx++ {
+		prefix := fmt.Sprintf("/s/%d", sIdx)
+		count := p.valueCounts[prefix]
+		for vIdx := 0; vIdx < count; vIdx++ {
+			path := fmt.Sprintf("%s/value/%d", prefix, vIdx)
+			if p.valueTypes[path] == kind {
+				parts = append(parts, p.blockContents[path])
+			}
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 func (p *StreamParser) SetText(v string) { p.storedText = v }
@@ -129,8 +139,16 @@ func (p *StreamParser) FeedLine(line string) error {
 }
 
 func (p *StreamParser) Finalize() *ParseResult {
+	raw := strings.TrimSpace(p.Text())
+	if raw == "" && strings.TrimSpace(p.storedThinking) != "" {
+		raw = strings.TrimSpace(p.storedThinking)
+	}
+	cleaned := CleanNotionOutputText(raw)
+	if cleaned == "" && raw != "" {
+		cleaned = raw
+	}
 	return &ParseResult{
-		Text:            CleanNotionOutputText(p.Text()),
+		Text:            cleaned,
 		Thinking:        p.storedThinking,
 		InputTokens:     p.inputTokens,
 		OutputTokens:    p.outputTokens,

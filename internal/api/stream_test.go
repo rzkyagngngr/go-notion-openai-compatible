@@ -7,11 +7,11 @@ import (
 
 func boolPtr(v bool) *bool { return &v }
 
-func TestWantsStreamDefaultTrue(t *testing.T) {
+func TestWantsStreamDefaultFalse(t *testing.T) {
 	req := chatRequest{}
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	if !wantsStream(&req, r, false, false) {
-		t.Fatal("expected default stream=true when field omitted")
+	if wantsStream(&req, r, false, false) {
+		t.Fatal("expected default stream=false (OpenAI REST) when field omitted")
 	}
 }
 
@@ -23,11 +23,19 @@ func TestWantsStreamRespectsExplicitFalseForTools(t *testing.T) {
 	}
 }
 
-func TestWantsStreamDefaultTrueForTools(t *testing.T) {
+func TestWantsStreamDefaultFalseForTools(t *testing.T) {
 	req := chatRequest{}
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	if !wantsStream(&req, r, true, false) {
-		t.Fatal("expected default stream=true for tool requests")
+	if wantsStream(&req, r, true, false) {
+		t.Fatal("expected default stream=false for tool requests unless stream:true")
+	}
+}
+
+func TestWantsStreamExplicitTrue(t *testing.T) {
+	req := chatRequest{Stream: boolPtr(true)}
+	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	if !wantsStream(&req, r, false, false) {
+		t.Fatal("expected stream=true when explicitly set")
 	}
 }
 

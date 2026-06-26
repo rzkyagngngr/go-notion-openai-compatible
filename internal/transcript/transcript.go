@@ -58,10 +58,6 @@ func BuildConfigValue(notionModel string, isSubsequent, ideAgentMode bool) map[s
 		cfg["useWebSearch"] = false
 		cfg["enableAgentThreadTools"] = false
 		cfg["searchScopes"] = []any{map[string]string{"type": "workspace"}}
-	} else {
-		// API chat mode: disable workspace/web search so follow-ups use conversation context.
-		cfg["useWebSearch"] = false
-		cfg["searchScopes"] = []any{}
 	}
 	if isSubsequent {
 		cfg["isThreadStartedByAdmin"] = true
