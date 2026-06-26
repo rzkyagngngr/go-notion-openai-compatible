@@ -8,8 +8,7 @@ data/
 threads/
 notion_account.json
 *.log
-notionchat.exe
-notionchat
+/notionchat.exe
 terminals/
 
 # Private capture files (cookies, internal Notion payloads)
