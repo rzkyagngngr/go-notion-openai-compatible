@@ -30,8 +30,21 @@ func TestPreemptiveExploreWithoutNotion(t *testing.T) {
 	if len(calls) == 0 {
 		t.Fatal("expected preemptive tool_calls before Notion call")
 	}
-	if names := ToolCallNames(calls); len(names) == 0 || names[0] == "" {
-		t.Fatalf("expected tool name, got %v", names)
+	names := ToolCallNames(calls)
+	if len(names) == 0 || names[0] != "shell_command" {
+		t.Fatalf("expected shell_command, got %v", names)
+	}
+}
+
+func TestExploreSkipsMCPTools(t *testing.T) {
+	tools := fallbackTools([]string{"list_mcp_resources", "read_mcp_resource", "shell_command", "glob_file_search"})
+	msgs := []ChatMessage{{Role: "user", Content: "analisa codebase"}}
+	calls := buildExploreToolCalls(msgs, tools)
+	if len(calls) == 0 {
+		t.Fatal("expected explore tool call")
+	}
+	if name := ToolCallNames(calls)[0]; name == "list_mcp_resources" || name == "read_mcp_resource" {
+		t.Fatalf("MCP tools must not be used for filesystem explore, got %s", name)
 	}
 }
 
@@ -46,6 +59,17 @@ func TestPreemptiveSkipsAfterToolHistory(t *testing.T) {
 	}
 	if calls := PreemptiveAgentToolCalls(msgs, CodexFallbackTools()); len(calls) != 0 {
 		t.Fatalf("expected no preemptive after tool history, got %v", calls)
+	}
+}
+
+func TestPreemptiveRetriesAfterEmptyMCPResult(t *testing.T) {
+	msgs := []ChatMessage{
+		{Role: "user", Content: "analisa codebase"},
+		{Role: "tool", Content: `{"resources": []}`, ToolCallID: "call_1", Name: "list_mcp_resources"},
+	}
+	calls := PreemptiveAgentToolCalls(msgs, CodexFallbackTools())
+	if len(calls) == 0 || ToolCallNames(calls)[0] != "shell_command" {
+		t.Fatalf("expected shell_command retry after empty MCP result, got %v", ToolCallNames(calls))
 	}
 }
 

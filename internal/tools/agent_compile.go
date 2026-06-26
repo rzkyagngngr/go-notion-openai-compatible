@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/google/uuid"
@@ -34,9 +35,17 @@ func pickTool(clientTools []map[string]any, candidates ...string) string {
 	return pickToolByHint(clientTools, candidates...)
 }
 
+func isMCPTool(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.Contains(lower, "mcp") || strings.HasSuffix(lower, "_resource") || strings.HasSuffix(lower, "_resources")
+}
+
 func pickToolByHint(clientTools []map[string]any, hints ...string) string {
 	allowed := clientToolNames(clientTools)
 	for name := range allowed {
+		if isMCPTool(name) {
+			continue
+		}
 		lower := strings.ToLower(name)
 		for _, hint := range hints {
 			if strings.Contains(lower, strings.ToLower(hint)) {
@@ -48,25 +57,67 @@ func pickToolByHint(clientTools []map[string]any, hints ...string) string {
 }
 
 func pickShellTool(clientTools []map[string]any) string {
-	if t := pickTool(clientTools, "Shell", "shell_command", "run_terminal_cmd", "run_terminal_command", "shell", "exec", "local_shell"); t != "" {
+	if t := pickTool(clientTools, "shell_command", "Shell", "run_terminal_cmd", "run_terminal_command", "shell", "exec", "local_shell"); t != "" && !isMCPTool(t) {
 		return t
 	}
 	return pickToolByHint(clientTools, "shell", "terminal", "command", "exec", "bash")
 }
 
 func pickGlobTool(clientTools []map[string]any) string {
-	if t := pickTool(clientTools, "Glob", "glob", "glob_file_search", "list_dir", "list_files", "list_mcp_resources"); t != "" {
+	if t := pickTool(clientTools, "glob_file_search", "Glob", "glob", "list_dir", "list_files"); t != "" && !isMCPTool(t) {
 		return t
 	}
-	return pickToolByHint(clientTools, "glob", "list", "dir", "search", "find_file")
+	return pickToolByHint(clientTools, "glob", "list_dir", "find_file")
 }
 
 func pickReadTool(clientTools []map[string]any) string {
-	if t := pickTool(clientTools, "Read", "read", "read_file", "read_mcp_resource"); t != "" {
+	if t := pickTool(clientTools, "read_file", "Read", "read"); t != "" && !isMCPTool(t) {
 		return t
 	}
-	return pickToolByHint(clientTools, "read", "file", "resource")
+	return pickToolByHint(clientTools, "read_file", "read")
 }
+
+func pickExploreTool(clientTools []map[string]any) string {
+	if t := pickShellTool(clientTools); t != "" {
+		return t
+	}
+	if t := pickGlobTool(clientTools); t != "" {
+		return t
+	}
+	return ""
+}
+
+func buildExploreArgs(toolName, path string) map[string]any {
+	lower := strings.ToLower(toolName)
+	switch {
+	case strings.Contains(lower, "shell") || strings.Contains(lower, "command") || lower == "exec":
+		cmd := "ls -la"
+		if path != "" {
+			if strings.Contains(path, ":") || strings.Contains(path, "\\") {
+				cmd = `Get-ChildItem -Force "` + path + `"`
+			} else {
+				cmd = `ls -la "` + path + `"`
+			}
+		} else if runtime.GOOS == "windows" {
+			cmd = "Get-ChildItem -Force"
+		}
+		return map[string]any{"command": cmd, "description": "List project files for codebase analysis"}
+	case strings.Contains(lower, "list_dir"):
+		args := map[string]any{}
+		if path != "" {
+			args["path"] = path
+		}
+		return args
+	default:
+		args := map[string]any{"pattern": "**/*"}
+		if path != "" {
+			args["target_directory"] = path
+		}
+		return args
+	}
+}
+
+
 
 func makeToolCall(name string, args map[string]any) map[string]any {
 	b, _ := json.Marshal(args)
@@ -232,34 +283,11 @@ func buildExploreToolCalls(messages []ChatMessage, clientTools []map[string]any)
 		return nil
 	}
 
-	globTool := pickGlobTool(clientTools)
-	shellTool := pickShellTool(clientTools)
-	readTool := pickReadTool(clientTools)
-
 	path := extractPathFromRequest(request)
-	if globTool != "" {
-		pattern := "**/*"
-		args := map[string]any{"glob_pattern": pattern}
-		if path != "" {
-			args["target_directory"] = path
-		}
-		return []map[string]any{makeToolCall(globTool, args)}
+	if tool := pickExploreTool(clientTools); tool != "" {
+		return []map[string]any{makeToolCall(tool, buildExploreArgs(tool, path))}
 	}
-	if shellTool != "" {
-		cmd := "ls -la"
-		if path != "" {
-			if strings.Contains(path, ":") || strings.Contains(path, "\\") {
-				cmd = `Get-ChildItem -Force "` + path + `"`
-			} else {
-				cmd = `ls -la "` + path + `"`
-			}
-		}
-		return []map[string]any{makeToolCall(shellTool, map[string]any{
-			"command":     cmd,
-			"description": "List project files for codebase analysis",
-		})}
-	}
-	if readTool != "" && path != "" {
+	if readTool := pickReadTool(clientTools); readTool != "" && path != "" {
 		return []map[string]any{makeToolCall(readTool, map[string]any{"path": path})}
 	}
 	return nil
@@ -272,10 +300,29 @@ func bootstrapExploreToolCalls(messages []ChatMessage, notionText string, client
 	return buildExploreToolCalls(messages, clientTools)
 }
 
+func isEmptyMCPToolResult(content string) bool {
+	lower := strings.ToLower(strings.TrimSpace(content))
+	return strings.Contains(lower, `"resources":[]`) || strings.Contains(lower, `"resources": []`)
+}
+
+func conversationHasUsefulToolResults(messages []ChatMessage) bool {
+	for _, msg := range messages {
+		if msg.Role != "tool" {
+			continue
+		}
+		text := strings.TrimSpace(extractText(msg.Content))
+		if text == "" || isEmptyMCPToolResult(text) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // PreemptiveAgentToolCalls returns tool_calls before calling Notion when the client
 // still needs filesystem exploration (Codex first turn on analyze/list tasks).
 func PreemptiveAgentToolCalls(messages []ChatMessage, clientTools []map[string]any) []map[string]any {
-	if conversationHasToolHistory(messages) {
+	if conversationHasUsefulToolResults(messages) {
 		return nil
 	}
 	return buildExploreToolCalls(messages, clientTools)

@@ -153,8 +153,8 @@ func CursorFallbackTools() []map[string]any {
 
 func CodexFallbackTools() []map[string]any {
 	return fallbackTools([]string{
-		"shell_command", "read_mcp_resource", "list_mcp_resources", "grep", "glob_file_search",
-		"read_file", "list_dir", "Shell", "Read", "Glob", "Grep",
+		"shell_command", "glob_file_search", "grep", "read_file", "list_dir",
+		"Shell", "Glob", "Read", "Grep",
 	})
 }
 
