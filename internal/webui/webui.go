@@ -152,7 +152,12 @@ document.getElementById('show-models').addEventListener('click', loadModels);
 document.getElementById('browser-refresh')?.addEventListener('click', async () => {
   const res = await fetch('/api/session/browser-refresh', {
     method: 'POST',
-    headers: { Authorization: 'Bearer ' + apiKey }
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + apiKey,
+      'X-NotionChat-Key': apiKey
+    },
+    body: JSON.stringify({ api_key: apiKey })
   });
   const data = await res.json();
   showStatus(data.message || (res.ok ? 'OK' : 'Gagal'), res.ok);
@@ -279,7 +284,7 @@ func (h *Handler) handleSessionRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleSessionBrowserRefresh(w http.ResponseWriter, r *http.Request) {
-	if !h.verifyInjectKey(r) {
+	if !h.verifyInjectKey(r) && !h.verifyInjectKeyFromBody(r) {
 		writeError(w, "Missing or invalid API key", http.StatusUnauthorized)
 		return
 	}
@@ -315,16 +320,17 @@ func (h *Handler) handleSessionBrowserRefresh(w http.ResponseWriter, r *http.Req
 }
 
 func (h *Handler) handleSessionInject(w http.ResponseWriter, r *http.Request) {
-	if !h.verifyInjectKey(r) {
-		writeError(w, "Missing or invalid API key", http.StatusUnauthorized)
-		return
-	}
 	var body struct {
+		APIKey  string `json:"api_key"`
 		Cookie  string `json:"cookie"`
 		TokenV2 string `json:"token_v2"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if !h.verifyInjectKey(r) && strings.TrimSpace(body.APIKey) != h.settings.APIKey {
+		writeError(w, "Missing or invalid API key", http.StatusUnauthorized)
 		return
 	}
 	cookie := strings.TrimSpace(body.Cookie)
@@ -349,11 +355,42 @@ func (h *Handler) handleSessionInject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) verifyInjectKey(r *http.Request) bool {
-	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
+	return verifyAPIKey(r, h.settings.APIKey)
+}
+
+// verifyAPIKey accepts Bearer, X-NotionChat-Key, X-API-Key, or ?api_key= (reverse proxies often strip Authorization).
+func verifyAPIKey(r *http.Request, expected string) bool {
+	if expected == "" {
 		return false
 	}
-	return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == h.settings.APIKey
+	for _, token := range []string{
+		bearerToken(r.Header.Get("Authorization")),
+		strings.TrimSpace(r.Header.Get("X-NotionChat-Key")),
+		strings.TrimSpace(r.Header.Get("X-API-Key")),
+		strings.TrimSpace(r.URL.Query().Get("api_key")),
+	} {
+		if token != "" && token == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func bearerToken(auth string) string {
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+}
+
+func (h *Handler) verifyInjectKeyFromBody(r *http.Request) bool {
+	var body struct {
+		APIKey string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		return false
+	}
+	return strings.TrimSpace(body.APIKey) == h.settings.APIKey
 }
 
 func (h *Handler) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
