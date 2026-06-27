@@ -50,8 +50,11 @@ func LoadConfig() Config {
 
 	if cfg.Mode == ModeHeadless {
 		if cfg.ChromiumPath == "" {
-			if _, err := os.Stat("/usr/bin/chromium"); err == nil {
-				cfg.ChromiumPath = "/usr/bin/chromium"
+			for _, p := range []string{"/usr/bin/chromium-browser", "/usr/bin/chromium"} {
+				if _, err := os.Stat(p); err == nil {
+					cfg.ChromiumPath = p
+					break
+				}
 			}
 		}
 		if cfg.ChromiumPath == "" {

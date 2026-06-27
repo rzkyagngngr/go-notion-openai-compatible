@@ -1,4 +1,4 @@
-FROM golang:1.22-bookworm AS builder
+FROM golang:1.22-alpine AS builder
 
 WORKDIR /src
 
@@ -10,16 +10,18 @@ COPY internal/ ./internal/
 
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /notionchat ./cmd/notionchat
 
-FROM debian:bookworm-slim
+FROM alpine:3.20
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
     chromium \
+    nss \
+    freetype \
+    harfbuzz \
     ca-certificates \
-    fonts-liberation \
-    xvfb \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r notionchat -g 10001 \
-    && useradd -r -g notionchat -u 10001 -d /app notionchat \
+    tzdata \
+    xvfb-run \
+    && addgroup -g 10001 -S notionchat \
+    && adduser -u 10001 -S notionchat -G notionchat \
     && mkdir -p /app/data /app/threads /app/data/browser-profile \
     && chown -R notionchat:notionchat /app
 
@@ -34,7 +36,7 @@ ENV NOTIONCHAT_PORT=8787
 ENV NOTIONCHAT_SESSION_FILE=/app/data/session.json
 ENV NOTIONCHAT_ACCOUNT=/app/data/notion_account.json
 ENV NOTIONCHAT_THREADS_DIR=/app/threads
-ENV NOTION_BROWSER_CHROMIUM_PATH=/usr/bin/chromium
+ENV NOTION_BROWSER_CHROMIUM_PATH=/usr/bin/chromium-browser
 ENV NOTION_BROWSER_NO_SANDBOX=true
 ENV NOTION_BROWSER_MODE=headless
 ENV NOTION_BROWSER_PROFILE_DIR=/app/data/browser-profile
