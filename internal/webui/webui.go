@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
@@ -51,12 +50,14 @@ const loginPageHTML = `<!DOCTYPE html>
   .models span { display:inline-block; background:#0e1118; border:1px solid var(--border); border-radius:4px; padding:2px 8px; margin:3px 4px 0 0; color:var(--text); }
   .client-box { margin-top:12px; padding:12px; background:#0e1118; border-radius:8px; font-size:.8rem; line-height:1.7; }
   pre.cmd { background:#0e1118; border:1px solid var(--border); border-radius:8px; padding:12px; font-size:.75rem; overflow-x:auto; white-space:pre-wrap; }
+  details summary { cursor:pointer; color:var(--accent); font-size:.85rem; margin-bottom:12px; }
+  details[open] summary { margin-bottom:14px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="logo">NotionChat</div>
-  <p class="sub">Sesi Notion diperbarui <strong>otomatis di server</strong> via headless Chromium. Tidak perlu refresh manual dari PC Anda.</p>
+  <p class="sub">Hubungkan sesi Notion lewat halaman ini. Setelah connect, server memperbarui <code>token_v2</code> otomatis — tidak perlu setup ulang tiap token habis.</p>
 
   <div id="status" class="status"></div>
   <div id="connected-card" class="card connected" style="display:none">
@@ -64,29 +65,36 @@ const loginPageHTML = `<!DOCTYPE html>
     <div class="meta" id="connected-meta"></div>
     <div class="client-box" id="client-info"></div>
     <div class="models" id="models-list"></div>
+    <button type="button" class="secondary" id="show-update">Perbarui sesi</button>
     <button type="button" class="secondary" id="browser-refresh">Recover session (browser)</button>
     <button type="button" class="danger" id="disconnect">Putuskan sesi</button>
   </div>
 
-  <div id="setup-card" class="card">
-    <span class="badge">Menunggu sesi</span>
-    <p class="hint">Server akan otomatis seed profil browser dari <code>session.json</code> saat startup. Jika belum pernah connect, jalankan <code>notionsync</code> sekali dari Windows (lihat docs/browser-login.md).</p>
-  </div>
-
-  {{if .DebugManualAuth}}
-  <div id="login-card" class="card">
-    <span class="badge">Debug manual auth</span>
-    <form id="connect-form">
-      <label>notion_browser_id</label>
-      <input name="notion_browser_id" placeholder="UUID">
-      <label>token_v2</label>
-      <input name="token_v2" type="password" placeholder="v03%3A...">
-      <label>space_name (opsional)</label>
-      <input name="space_name" placeholder="Workspace">
-      <button type="submit">Connect</button>
+  <div id="connect-card" class="card">
+    <span class="badge">Hubungkan Notion</span>
+    <p class="hint">1) Login ke <a href="https://www.notion.com" target="_blank" rel="noopener" style="color:var(--accent)">notion.com</a> di browser Anda.<br>
+    2) Buka DevTools (F12) → <strong>Application</strong> → <strong>Cookies</strong> → <code>https://www.notion.com</code><br>
+    3) Salin nilai <code>token_v2</code> dan <code>notion_browser_id</code>, atau paste seluruh string cookie di bawah.</p>
+    <form id="connect-cookie-form">
+      <label>Cookie Notion</label>
+      <textarea name="cookie" placeholder="token_v2=v03%3A...; notion_browser_id=...; device_id=..."></textarea>
+      <label>Workspace (opsional — nama atau space_id)</label>
+      <input name="space_name" placeholder="mylordsusan's Space">
+      <button type="submit">Hubungkan</button>
     </form>
+    <details>
+      <summary>Atau isi per field</summary>
+      <form id="connect-fields-form">
+        <label>token_v2</label>
+        <input name="token_v2" type="password" placeholder="v03%3A..." required>
+        <label>notion_browser_id</label>
+        <input name="notion_browser_id" placeholder="UUID" required>
+        <label>Workspace (opsional)</label>
+        <input name="space_name" placeholder="nama workspace atau space_id">
+        <button type="submit">Hubungkan</button>
+      </form>
+    </details>
   </div>
-  {{end}}
 
   <div class="links">
     <a href="/healthz">Health</a>
@@ -96,7 +104,7 @@ const loginPageHTML = `<!DOCTYPE html>
 <script>
 const status = document.getElementById('status');
 const connectedCard = document.getElementById('connected-card');
-const setupCard = document.getElementById('setup-card');
+const connectCard = document.getElementById('connect-card');
 const connectedMeta = document.getElementById('connected-meta');
 const apiKey = {{.APIKeyJSON}};
 
@@ -125,12 +133,19 @@ async function loadModels() {
   el.innerHTML = (data.data || []).map(m => '<span>' + m.id + '</span>').join('');
 }
 
+let showConnectForm = false;
+
+function setConnectVisible(visible) {
+  if (!connectCard) return;
+  connectCard.style.display = visible ? 'block' : 'none';
+}
+
 async function refreshStatus() {
   const res = await fetch('/api/session');
   const data = await res.json();
   if (data.connected) {
     connectedCard.style.display = 'block';
-    if (setupCard) setupCard.style.display = 'none';
+    setConnectVisible(showConnectForm);
     connectedMeta.innerHTML =
       '<strong>' + (data.user_name || data.user_email || 'User') + '</strong><br>' +
       'Workspace: <strong>' + (data.space_name || '-') + '</strong><br>' +
@@ -143,7 +158,22 @@ async function refreshStatus() {
     loadModels();
   } else {
     connectedCard.style.display = 'none';
-    if (setupCard) setupCard.style.display = 'block';
+    showConnectForm = true;
+    setConnectVisible(true);
+  }
+}
+
+async function submitConnect(body) {
+  const res = await fetch('/api/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  showStatus(data.message || (res.ok ? 'Terhubung' : 'Gagal'), res.ok);
+  if (res.ok) {
+    showConnectForm = false;
+    refreshStatus();
   }
 }
 
@@ -164,22 +194,32 @@ document.getElementById('browser-refresh')?.addEventListener('click', async () =
   refreshStatus();
 });
 
-const form = document.getElementById('connect-form');
-if (form) {
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const body = Object.fromEntries(fd.entries());
-    const res = await fetch('/api/session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    showStatus(data.message || (res.ok ? 'Terhubung' : 'Gagal'), res.ok);
-    if (res.ok) refreshStatus();
-  });
-}
+document.getElementById('connect-cookie-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const cookie = String(fd.get('cookie') || '').trim();
+  if (!cookie) {
+    showStatus('Cookie kosong — paste token_v2 dari DevTools', false);
+    return;
+  }
+  const body = { cookie };
+  const space = String(fd.get('space_name') || '').trim();
+  if (space) body.space_name = space;
+  await submitConnect(body);
+});
+
+document.getElementById('connect-fields-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const body = Object.fromEntries(fd.entries());
+  await submitConnect(body);
+});
+
+document.getElementById('show-update')?.addEventListener('click', () => {
+  showConnectForm = true;
+  setConnectVisible(true);
+  connectCard?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
 
 document.getElementById('disconnect').addEventListener('click', async () => {
   await fetch('/api/session', { method: 'DELETE' });
@@ -193,9 +233,8 @@ refreshStatus();
 </html>`
 
 type pageData struct {
-	APIKeyJSON       string
-	ServerURL        string
-	DebugManualAuth  bool
+	APIKeyJSON string
+	ServerURL  string
 }
 
 var pageTmpl = template.Must(template.New("login").Parse(loginPageHTML))
@@ -233,15 +272,9 @@ func (h *Handler) handleHome(w http.ResponseWriter, r *http.Request) {
 		serverURL += ":" + strconv.Itoa(h.settings.Port)
 	}
 	_ = pageTmpl.Execute(w, pageData{
-		APIKeyJSON:      string(keyJSON),
-		ServerURL:       serverURL,
-		DebugManualAuth: debugManualAuth(),
+		APIKeyJSON: string(keyJSON),
+		ServerURL:  serverURL,
 	})
-}
-
-func debugManualAuth() bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv("NOTION_DEBUG_MANUAL_AUTH")))
-	return v == "1" || v == "true" || v == "yes"
 }
 
 func (h *Handler) redirectHome(w http.ResponseWriter, r *http.Request) {

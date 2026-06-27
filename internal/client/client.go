@@ -169,11 +169,11 @@ func emptyResponseMessage(result *ndjson.ParseResult, threadID string) string {
 	for _, sample := range result.SampleLines {
 		trimmed := strings.TrimSpace(sample)
 		if trimmed == "[]" || trimmed == "[" {
-			return "Notion session expired (empty inference stream). Paste a fresh token_v2 at / or set NOTION_COOKIE / data/inject_cookie.txt — auto-refresh will pick it up."
+			return "Notion session expired (empty inference stream). Paste a fresh token_v2 at / — auto-refresh will pick it up."
 		}
 	}
 	if result.LineCount == 1 && result.JSONFailures == 1 {
-		return "Notion session expired (token_v2 stale). Update cookie via / , NOTION_COOKIE env, or data/inject_cookie.txt."
+		return "Notion session expired (token_v2 stale). Update cookie via / — auto-refresh will retry after you reconnect."
 	}
 	events := make([]string, 0, len(result.EventTypeCounts))
 	for k, v := range result.EventTypeCounts {
