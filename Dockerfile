@@ -20,6 +20,7 @@ RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     xvfb-run \
+    su-exec \
     && addgroup -g 10001 -S notionchat \
     && adduser -u 10001 -S notionchat -G notionchat \
     && mkdir -p /app/data /app/threads /app/data/browser-profile \
@@ -28,8 +29,8 @@ RUN apk add --no-cache \
 WORKDIR /app
 
 COPY --from=builder --chown=notionchat:notionchat /notionchat /app/notionchat
-
-USER notionchat
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 ENV NOTIONCHAT_HOST=0.0.0.0
 ENV NOTIONCHAT_PORT=8787
@@ -45,4 +46,5 @@ EXPOSE 8787
 
 VOLUME ["/app/data", "/app/threads"]
 
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["/app/notionchat"]

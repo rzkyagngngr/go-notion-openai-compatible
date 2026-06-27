@@ -7,7 +7,7 @@ param(
     [string]$Repo = "/home/Code/project/go-notion-openai-compatible"
 )
 
-$remote = "cd $Repo && git pull --ff-only origin main && docker compose up -d --build && docker compose ps notionchat && curl -s http://127.0.0.1:8787/healthz && echo && curl -s http://127.0.0.1:8787/api/session | head -c 400"
+$remote = "cd $Repo && git pull --ff-only origin main && docker compose up -d --build && docker run --rm -v go-notion-openai-compatible_notionchat-data:/data alpine chown -R 10001:10001 /data 2>/dev/null || true && docker compose restart notionchat && docker compose ps notionchat && curl -s http://127.0.0.1:8787/healthz && echo && curl -s http://127.0.0.1:8787/api/session | head -c 400"
 Write-Host "git push (local) ..."
 git push origin main
 Write-Host "Deploy via plink -> $User ..."
