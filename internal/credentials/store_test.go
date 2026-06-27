@@ -6,6 +6,17 @@ import (
 	"testing"
 )
 
+func TestNormalizeInputJSONCookies(t *testing.T) {
+	raw := `[{"name":"notion_browser_id","value":"br-1","domain":".notion.com"},{"name":"notion_user_id","value":"uid-1","domain":".app.notion.com"},{"name":"token_v2","value":"tok-1","domain":".app.notion.com"}]`
+	out := normalizeInput(SessionInput{Cookie: raw})
+	if out.TokenV2 != "tok-1" {
+		t.Fatalf("token: %q", out.TokenV2)
+	}
+	if out.NotionBrowserID != "br-1" {
+		t.Fatalf("browser: %q", out.NotionBrowserID)
+	}
+}
+
 func TestBuildCookieFromFields(t *testing.T) {
 	input := SessionInput{NotionBrowserID: "br-1", TokenV2: "tok-1"}
 	cookie := buildCookie(normalizeInput(input))

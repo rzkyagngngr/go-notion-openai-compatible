@@ -277,6 +277,9 @@ func normalizeInput(input SessionInput) SessionInput {
 	input.SpaceName = strings.TrimSpace(input.SpaceName)
 
 	if input.Cookie != "" {
+		if converted, ok := account.ParseCookieImport(input.Cookie); ok {
+			input.Cookie = converted
+		}
 		parsed := account.ParseBrowserCookie(input.Cookie)
 		if v := parsed["notion_browser_id"]; v != "" {
 			input.NotionBrowserID = v

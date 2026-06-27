@@ -73,11 +73,11 @@ const loginPageHTML = `<!DOCTYPE html>
   <div id="connect-card" class="card">
     <span class="badge">Hubungkan Notion</span>
     <p class="hint">1) Login ke <a href="https://www.notion.com" target="_blank" rel="noopener" style="color:var(--accent)">notion.com</a> di browser Anda.<br>
-    2) Buka DevTools (F12) → <strong>Application</strong> → <strong>Cookies</strong> → <code>https://www.notion.com</code><br>
-    3) Salin nilai <code>token_v2</code> dan <code>notion_browser_id</code>, atau paste seluruh string cookie di bawah.</p>
+    2) Export cookies dari extension (Cookie Editor → Export JSON) atau salin string <code>token_v2=...; notion_browser_id=...</code><br>
+    3) Paste di bawah lalu klik Hubungkan.</p>
     <form id="connect-cookie-form">
-      <label>Cookie Notion</label>
-      <textarea name="cookie" placeholder="token_v2=v03%3A...; notion_browser_id=...; device_id=..."></textarea>
+      <label>Cookie Notion (JSON export atau string)</label>
+      <textarea name="cookie" placeholder='[{"name":"token_v2","value":"v03%3A..."},...] atau token_v2=...; notion_browser_id=...'></textarea>
       <label>Workspace (opsional — nama atau space_id)</label>
       <input name="space_name" placeholder="mylordsusan's Space">
       <button type="submit">Hubungkan</button>
