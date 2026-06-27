@@ -298,7 +298,7 @@ func (h *Handler) handleSessionBrowserRefresh(w http.ResponseWriter, r *http.Req
 	probeOK := h.store.SessionHealthy()
 	msg := "Browser refresh complete"
 	if !st.BrowserProfileReady {
-		msg = "Browser profile not logged in — run notionsync from Windows (see docs/browser-login.md)"
+		msg = "Browser profile belum di-seed — tunggu startup server atau POST /api/session/browser-refresh"
 		writeJSONStatus(w, http.StatusUnprocessableEntity, map[string]any{
 			"ok": false, "refreshed": changed, "browser_profile_ready": false,
 			"probe_ok": probeOK, "message": msg,

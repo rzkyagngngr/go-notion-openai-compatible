@@ -28,7 +28,7 @@ func (s *Store) SeedBrowserProfile() {
 		return
 	}
 	log.Printf("browser profile seeded for workspace %s — server headless refresh enabled", acc.SpaceID)
-	s.invalidateProfileReadyCache()
+	s.markProfileSeeded()
 }
 
 func (s *Store) StartBrowserProfileSeed() {

@@ -1,7 +1,6 @@
 package credentials
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -71,8 +70,7 @@ type Store struct {
 	raw                   SessionInput
 	refresher             browserrefresh.Refresher
 	browserCfg            browserrefresh.Config
-	profileReadyCache     bool
-	profileReadyCachedAt  time.Time
+	profileSeeded         bool
 }
 
 func NewStore(sessionFile, accountPath string, refresher browserrefresh.Refresher) *Store {
@@ -215,8 +213,6 @@ func (s *Store) GetAccount() (*account.NotionAccount, error) {
 
 func (s *Store) Status() SessionStatus {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	st := SessionStatus{
 		Connected:            s.account != nil && s.account.SpaceID != "",
 		NotionBrowserID:      s.raw.NotionBrowserID,
@@ -226,6 +222,7 @@ func (s *Store) Status() SessionStatus {
 		LastBrowserRefreshAt: s.lastBrowserRefreshAt,
 		CredentialSource:     s.credentialSource,
 		BrowserMode:          s.refresher.Mode(),
+		BrowserProfileReady:  s.profileSeeded,
 	}
 	if s.account != nil {
 		st.UserName = s.account.UserName
@@ -236,33 +233,13 @@ func (s *Store) Status() SessionStatus {
 			st.NotionBrowserID = s.account.BrowserID
 		}
 	}
-	if s.refresher.Enabled() {
-		st.BrowserProfileReady = s.cachedProfileReady(st.SpaceID)
-	}
+	s.mu.RUnlock()
 	return st
 }
 
-func (s *Store) cachedProfileReady(spaceID string) bool {
-	s.mu.RLock()
-	if time.Since(s.profileReadyCachedAt) < 60*time.Second {
-		ready := s.profileReadyCache
-		s.mu.RUnlock()
-		return ready
-	}
-	s.mu.RUnlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	ready, _ := s.refresher.Ready(ctx, spaceID)
-	cancel()
+func (s *Store) markProfileSeeded() {
 	s.mu.Lock()
-	s.profileReadyCache = ready
-	s.profileReadyCachedAt = time.Now()
-	s.mu.Unlock()
-	return ready
-}
-
-func (s *Store) invalidateProfileReadyCache() {
-	s.mu.Lock()
-	s.profileReadyCachedAt = time.Time{}
+	s.profileSeeded = true
 	s.mu.Unlock()
 }
 
