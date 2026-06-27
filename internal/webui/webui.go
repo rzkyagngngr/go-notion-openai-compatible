@@ -94,6 +94,12 @@ const loginPageHTML = `<!DOCTYPE html>
     </form>
   </div>
 
+  <div class="card" style="margin-top:16px">
+    <span class="badge">Auto-inject dari browser</span>
+    <p class="hint">Drag bookmarklet ini ke bookmark bar. Klik saat tab Notion terbuka — token_v2 otomatis dikirim ke server ini tanpa copy-paste manual.</p>
+    <a id="inject-bookmarklet" class="hint" style="display:inline-block;padding:10px 14px;border:1px dashed var(--border);border-radius:8px;color:var(--accent);text-decoration:none;font-weight:600">⟳ Sync Notion Token</a>
+  </div>
+
   <div class="links">
     <a href="/healthz">Health</a>
     <button type="button" class="link" id="show-models">Models</button>
@@ -162,6 +168,14 @@ async function refreshStatus() {
 
 document.getElementById('show-models').addEventListener('click', loadModels);
 
+(function() {
+  const apiKey = {{.APIKeyJSON}};
+  const injectURL = location.origin + '/api/session/inject';
+  const code = 'javascript:(async()=>{const c=document.cookie;const t=(c.match(/token_v2=([^;]+)/)||[])[1];if(!t){alert("token_v2 tidak ditemukan — login notion.com dulu");return}const r=await fetch(' + JSON.stringify(injectURL) + ',{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+' + JSON.stringify(apiKey) + '},body:JSON.stringify({cookie:c})});const j=await r.json();alert(r.ok?j.message||"Token synced":j.message||"Inject gagal")})()';
+  const el = document.getElementById('inject-bookmarklet');
+  if (el) { el.href = code; el.draggable = true; }
+})();
+
 document.getElementById('connect-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
@@ -187,6 +201,10 @@ refreshStatus();
 </body>
 </html>`
 
+type pageData struct {
+	APIKeyJSON string
+}
+
 var pageTmpl = template.Must(template.New("login").Parse(loginPageHTML))
 
 type Handler struct {
@@ -211,7 +229,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 func (h *Handler) handleHome(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = pageTmpl.Execute(w, nil)
+	keyJSON, _ := json.Marshal(h.settings.APIKey)
+	_ = pageTmpl.Execute(w, pageData{APIKeyJSON: string(keyJSON)})
 }
 
 func (h *Handler) redirectHome(w http.ResponseWriter, r *http.Request) {

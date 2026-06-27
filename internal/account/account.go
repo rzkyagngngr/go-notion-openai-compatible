@@ -10,7 +10,7 @@ import (
 	"github.com/mughu-id/notionchat/internal/errors"
 )
 
-const DefaultClientVersion = "23.13.20260616.2105"
+const DefaultClientVersion = "23.13.20260626.2339"
 
 type NotionAccount struct {
 	TokenV2       string            `json:"token_v2"`
@@ -44,7 +44,7 @@ func (a *NotionAccount) applyDefaults() {
 		a.UserAgent = DefaultUserAgent()
 	}
 	if a.Timezone == "" {
-		a.Timezone = "America/Los_Angeles"
+		a.Timezone = "Asia/Jakarta"
 	}
 	if a.DefaultModel == "" {
 		a.DefaultModel = "ambrosia-tart-high"

@@ -24,43 +24,45 @@ func NowISO(tz string) string {
 
 func BuildConfigValue(notionModel string, isSubsequent, ideAgentMode bool) map[string]any {
 	cfg := map[string]any{
-		"type": "workflow", "modelFromUser": !isSubsequent,
-		"enableAgentAutomations": false, "enableAgentIntegrations": false,
-		"enableCustomAgents": false, "enableExperimentalIntegrations": false,
-		"enableAgentDiffs": false, "enableCsvAttachmentSupport": false,
-		"showDatabaseAgentsDiscoverability": false, "enableAgentThreadTools": false,
-		"enableCrdtOperations": false, "enableAgentCardCustomization": false,
-		"enableSystemPromptAsPage": false, "enableUserSessionContext": false,
-		"enableLargeToolResultComputerOffload": false, "enableScriptAgentAdvanced": false,
-		"enableScriptAgent": false, "enableScriptAgentSearchConnectorsInCustomAgent": false,
+		"type": "workflow", "modelFromUser": false,
+		"enableAgentAutomations": true, "enableAgentIntegrations": true,
+		"enableCustomAgents": true, "enableExperimentalIntegrations": false,
+		"enableScriptAgent": true, "enableScriptAgentAdvanced": false,
+		"enableScriptAgentSearchConnectorsInCustomAgent": false,
 		"enableScriptAgentGoogleDriveInCustomAgent": false,
 		"enableScriptAgentGoogleDriveOAuthInCustomAgent": false,
-		"enableScriptAgentSlack": false, "enableScriptAgentMcpServers": false,
-		"enableScriptAgentGtm": false, "enableScriptAgentCustomToolCalling": false,
-		"enableComputer": false, "enableCreateAndRunThread": false,
+		"enableScriptAgentSlack": true, "enableScriptAgentMcpServers": false,
+		"enableAgentDiffs": true, "enableCsvAttachmentSupport": true,
+		"showDatabaseAgentsDiscoverability": false, "enableAgentThreadTools": false,
+		"enableCrdtOperations": false, "enableAgentCardCustomization": true,
+		"enableSystemPromptAsPage": false, "enableUserSessionContext": false,
+		"enableLargeToolResultComputerOffload": false,
+		"enableScriptAgentGtm": false, "enableComputer": false,
+		"enableCreateAndRunThread": true, "enableCustomAgentCreateGuidanceV2": false,
 		"enableSoftwareFactoryPage": false, "enableAgentGenerateImage": false,
-		"enableSpeculativeSearch": false, "enableQueryCalendar": false,
-		"enableQueryMail": false, "enableMailExplicitToolCalls": false,
-		"enableMailNotificationPreferences": false, "enableMailAgentMultiProviderSupport": false,
+		"enableQueryCalendar": false, "enableQueryMail": false,
+		"enableMailExplicitToolCalls": true, "enableMailNotificationPreferences": false,
+		"enableMailAgentMultiProviderSupport": true,
 		"useRulePrioritization": true, "availableConnectors": []any{},
-		"customConnectorInfo": []any{}, "searchScopes": []any{map[string]string{"type": "everything"}},
+		"searchScopes": []any{map[string]string{"type": "everything"}},
 		"useWebSearch": true, "isHipaa": false, "internetAccess": false,
-		"useReadOnlyMode": false, "writerMode": false, "isCustomAgent": false,
-		"model": notionModel, "isCustomAgentBuilder": false, "isAgentResearchRequest": false,
-		"useCustomAgentDraft": false, "use_draft_actor_pointer": false,
-		"enableUpdatePageAutofixer": false, "enableMarkdownVNext": false,
-		"enableEmbedBlocks": false, "updatePageStaleViewGuardEnabled": false,
-		"enableUpdatePageOrderUpdates": false, "enableAgentSupportPropertyReorder": false,
-		"agentShortUpdatePageResult": false, "enableAgentAskSurvey": false,
-		"databaseAgentConfigMode": false, "isOnboardingAgent": false, "isMobile": false,
+		"manageWorkers": false, "useReadOnlyMode": false, "writerMode": false,
+		"isCustomAgent": false, "isCustomAgentBuilder": false,
+		"isAgentResearchRequest": false, "useCustomAgentDraft": false,
+		"use_draft_actor_pointer": false,
+		"enableUpdatePageAutofixer": true, "enableMarkdownVNext": false,
+		"enableEmbedBlocks": true, "updatePageStaleViewGuardEnabled": false,
+		"enableUpdatePageOrderUpdates": true, "enableAgentSupportPropertyReorder": true,
+		"enableAgentAskSurvey": true, "databaseAgentConfigMode": false,
+		"isOnboardingAgent": false, "isMobile": false,
 	}
 	if ideAgentMode {
 		cfg["useWebSearch"] = false
 		cfg["enableAgentThreadTools"] = false
 		cfg["searchScopes"] = []any{map[string]string{"type": "workspace"}}
-	} else {
-		cfg["useWebSearch"] = false
-		cfg["searchScopes"] = []any{}
+	}
+	if notionModel != "" {
+		cfg["model"] = notionModel
 	}
 	if isSubsequent {
 		cfg["isThreadStartedByAdmin"] = true
@@ -79,7 +81,7 @@ func BuildContextValue(acc *account.NotionAccount, currentDatetime string) map[s
 	return map[string]any{
 		"timezone": acc.Timezone, "userName": userName, "userId": acc.UserID,
 		"userEmail": acc.UserEmail, "spaceName": acc.SpaceName, "spaceId": acc.SpaceID,
-		"spaceViewId": acc.SpaceViewID, "currentDatetime": currentDatetime, "surface": "ai_module",
+		"spaceViewId": acc.SpaceViewID, "currentDatetime": currentDatetime, "surface": "workflows",
 	}
 }
 
@@ -133,9 +135,9 @@ func BuildInferenceRequest(
 	body := map[string]any{
 		"traceId": traceID, "spaceId": acc.SpaceID, "transcript": transcript,
 		"threadId": threadID, "createThread": createThread, "isPartialTranscript": isPartial,
-		"generateTitle": false, "saveAllThreadOperations": false, "setUnreadState": false,
+		"generateTitle": createThread, "saveAllThreadOperations": true, "setUnreadState": true,
 		"threadType": "workflow", "asPatchResponse": true, "patchResponseVersion": 2,
-		"hasHeartbeat": false, "createdSource": "ai_module",
+		"createdSource": "workflows",
 		"isUserInAnySalesAssistedSpace": false, "isSpaceSalesAssisted": false,
 		"debugOverrides": map[string]any{
 			"emitAgentSearchExtractedResults": true,
