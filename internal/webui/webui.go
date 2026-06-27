@@ -56,7 +56,7 @@ const loginPageHTML = `<!DOCTYPE html>
 <body>
 <div class="wrap">
   <div class="logo">NotionChat</div>
-  <p class="sub">Sesi Notion diperbarui otomatis. Seed pertama dari Chrome Windows via <code>notionsync</code> — tanpa copy-paste manual.</p>
+  <p class="sub">Sesi Notion diperbarui <strong>otomatis di server</strong> via headless Chromium. Tidak perlu refresh manual dari PC Anda.</p>
 
   <div id="status" class="status"></div>
   <div id="connected-card" class="card connected" style="display:none">
@@ -69,10 +69,8 @@ const loginPageHTML = `<!DOCTYPE html>
   </div>
 
   <div id="setup-card" class="card">
-    <span class="badge">Setup — notionsync (Windows)</span>
-    <p class="hint">Login notion.com di Chrome, lalu jalankan di PowerShell (sesi = HTTP cookie dari browser kamu):</p>
-    <pre class="cmd">chrome.exe --remote-debugging-port=9222
-go run ./cmd/notionsync --cdp http://127.0.0.1:9222 --url {{.ServerURL}} --space WORKSPACE_ID</pre>
+    <span class="badge">Menunggu sesi</span>
+    <p class="hint">Server akan otomatis seed profil browser dari <code>session.json</code> saat startup. Jika belum pernah connect, jalankan <code>notionsync</code> sekali dari Windows (lihat docs/browser-login.md).</p>
   </div>
 
   {{if .DebugManualAuth}}

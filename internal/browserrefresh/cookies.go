@@ -43,6 +43,52 @@ func hasToken(cookies []*proto.NetworkCookie) bool {
 	return false
 }
 
+var seedDomains = []string{".notion.so", "www.notion.so", "notion.so", "app.notion.com", ".notion.com"}
+
+func headerToCookieParams(cookieHeader string) []*proto.NetworkCookieParam {
+	parsed := account.ParseBrowserCookie(cookieHeader)
+	token := parsed["token_v2"]
+	if token == "" {
+		return nil
+	}
+	names := []struct {
+		name     string
+		required bool
+	}{
+		{"token_v2", true},
+		{"notion_browser_id", false},
+		{"notion_user_id", false},
+		{"device_id", false},
+		{"notion_check_cookie_consent", false},
+	}
+	var params []*proto.NetworkCookieParam
+	for _, dom := range seedDomains {
+		for _, n := range names {
+			val := parsed[n.name]
+			if val == "" {
+				if n.name == "notion_check_cookie_consent" {
+					val = "false"
+				} else if n.required {
+					continue
+				} else {
+					continue
+				}
+			}
+			domain := dom
+			params = append(params, &proto.NetworkCookieParam{
+				Name:     n.name,
+				Value:    val,
+				Domain:   domain,
+				Path:     "/",
+				Secure:   true,
+				HTTPOnly: n.name == "token_v2",
+				SameSite: proto.NetworkCookieSameSiteLax,
+			})
+		}
+	}
+	return params
+}
+
 func mergeCookieSets(sets ...[]*proto.NetworkCookie) []*proto.NetworkCookie {
 	out := make([]*proto.NetworkCookie, 0)
 	seen := make(map[string]bool)

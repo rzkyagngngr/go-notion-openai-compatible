@@ -10,6 +10,8 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+
+	"github.com/mughu-id/notionchat/internal/account"
 )
 
 type rodRefresher struct {
@@ -33,6 +35,48 @@ func (r *rodRefresher) ExtractSession(ctx context.Context, spaceID string) (stri
 	unlock := acquireLock()
 	defer unlock()
 	return r.extract(ctx, spaceID, true)
+}
+
+func (r *rodRefresher) SeedProfile(ctx context.Context, cookieHeader, spaceID string) error {
+	params := headerToCookieParams(cookieHeader)
+	if len(params) == 0 {
+		return nil
+	}
+	unlock := acquireLock()
+	defer unlock()
+
+	timeout := time.Duration(r.cfg.TimeoutSec) * time.Second
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	browser, cleanup, err := r.connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	page, err := browser.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	if err != nil {
+		return err
+	}
+	if err := page.Navigate("https://www.notion.so"); err != nil {
+		return err
+	}
+	_ = page.WaitLoad()
+	if err := page.SetCookies(params); err != nil {
+		return err
+	}
+	target := r.cfg.LoginURL
+	if u := workspaceURL(spaceID); u != "" {
+		target = u
+	}
+	if err := page.Navigate(target); err != nil {
+		return err
+	}
+	_ = page.WaitLoad()
+	time.Sleep(2 * time.Second)
+	log.Printf("browserrefresh: seeded headless profile with token_v2 (%s)", MaskToken(account.ParseBrowserCookie(cookieHeader)["token_v2"]))
+	return nil
 }
 
 func (r *rodRefresher) extract(ctx context.Context, spaceID string, navigate bool) (string, bool, error) {

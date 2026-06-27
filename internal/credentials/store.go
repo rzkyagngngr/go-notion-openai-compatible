@@ -71,6 +71,8 @@ type Store struct {
 	raw                   SessionInput
 	refresher             browserrefresh.Refresher
 	browserCfg            browserrefresh.Config
+	profileReadyCache     bool
+	profileReadyCachedAt  time.Time
 }
 
 func NewStore(sessionFile, accountPath string, refresher browserrefresh.Refresher) *Store {
@@ -126,6 +128,7 @@ func (s *Store) loadFromDisk() {
 		s.mu.Lock()
 		s.account = refreshAccountCookies(acc, buildCookie(input))
 		s.mu.Unlock()
+		s.StartBrowserProfileSeed()
 	}
 }
 
@@ -164,6 +167,7 @@ func (s *Store) Connect(input SessionInput) (*account.NotionAccount, error) {
 		return nil, err
 	}
 	models.ClearCache()
+	s.StartBrowserProfileSeed()
 	return acc, nil
 }
 
@@ -234,13 +238,33 @@ func (s *Store) Status() SessionStatus {
 		}
 	}
 	if s.refresher.Enabled() {
-		spaceID := st.SpaceID
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		ready, _ := s.refresher.Ready(ctx, spaceID)
-		cancel()
-		st.BrowserProfileReady = ready
+		st.BrowserProfileReady = s.cachedProfileReady(st.SpaceID)
 	}
 	return st
+}
+
+func (s *Store) cachedProfileReady(spaceID string) bool {
+	s.mu.RLock()
+	if time.Since(s.profileReadyCachedAt) < 60*time.Second {
+		ready := s.profileReadyCache
+		s.mu.RUnlock()
+		return ready
+	}
+	s.mu.RUnlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ready, _ := s.refresher.Ready(ctx, spaceID)
+	cancel()
+	s.mu.Lock()
+	s.profileReadyCache = ready
+	s.profileReadyCachedAt = time.Now()
+	s.mu.Unlock()
+	return ready
+}
+
+func (s *Store) invalidateProfileReadyCache() {
+	s.mu.Lock()
+	s.profileReadyCachedAt = time.Time{}
+	s.mu.Unlock()
 }
 
 func (s *Store) persist() error {

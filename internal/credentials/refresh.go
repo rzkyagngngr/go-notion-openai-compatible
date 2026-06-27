@@ -205,7 +205,7 @@ func (s *Store) applyExternalCookie(cookie, source string) (bool, error) {
 		if err == nil {
 			s.setCredentialSource(normalizeSource(source))
 		}
-		return true, err
+		return true, err // Connect already seeds browser profile
 	}
 
 	log.Printf("Credential refresh (%s): token_v2 updated", source)
@@ -213,6 +213,7 @@ func (s *Store) applyExternalCookie(cookie, source string) (bool, error) {
 		return false, err
 	}
 	s.setCredentialSource(normalizeSource(source))
+	s.StartBrowserProfileSeed()
 	return true, nil
 }
 

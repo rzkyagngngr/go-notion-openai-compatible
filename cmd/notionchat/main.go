@@ -25,8 +25,7 @@ func main() {
 	go creds.StartBackgroundRefresh(stopRefresh)
 
 	log.Printf("NotionChat Go server starting on http://%s", addr)
-	log.Printf("Browser refresh mode: %s", brCfg.Mode)
-	log.Printf("Seed session from Windows: go run ./cmd/notionsync --url http://%s", addr)
+	log.Printf("Browser refresh mode: %s (headless on server — auto token refresh)", brCfg.Mode)
 
 	if err := http.ListenAndServe(addr, server.Handler()); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)

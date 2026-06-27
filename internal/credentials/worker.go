@@ -35,6 +35,7 @@ func (s *Store) StartBackgroundRefresh(stop <-chan struct{}) {
 		}
 	}
 
+	s.SeedBrowserProfile()
 	run("startup", true)
 	for {
 		select {
