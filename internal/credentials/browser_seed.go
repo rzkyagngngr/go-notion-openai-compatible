@@ -21,7 +21,7 @@ func (s *Store) SeedBrowserProfile() {
 	if cookie == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if err := s.refresher.SeedProfile(ctx, cookie, acc.SpaceID); err != nil {
 		log.Printf("browser profile seed: %v", err)

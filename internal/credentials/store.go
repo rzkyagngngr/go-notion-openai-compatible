@@ -128,7 +128,6 @@ func (s *Store) loadFromDisk() {
 		s.mu.Lock()
 		s.account = refreshAccountCookies(acc, buildCookie(input))
 		s.mu.Unlock()
-		s.StartBrowserProfileSeed()
 	}
 }
 

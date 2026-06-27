@@ -29,13 +29,13 @@ func (s *Store) StartBackgroundRefresh(stop <-chan struct{}) {
 		if mustProbe || s.ProbeDue() {
 			acc, err := s.GetAccount()
 			if err == nil && acc != nil && !sessionrefresh.ProbeInference(acc) {
-				log.Printf("background refresh: session stale — run notionsync from Windows or POST /api/session/browser-refresh")
+				log.Printf("background refresh: session stale — server will retry headless browser refresh")
 			}
 			s.MarkProbeDone()
 		}
 	}
 
-	s.SeedBrowserProfile()
+	go s.SeedBrowserProfile()
 	run("startup", true)
 	for {
 		select {

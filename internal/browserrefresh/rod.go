@@ -215,7 +215,11 @@ func (r *rodRefresher) connect(ctx context.Context) (*rod.Browser, func(), error
 	l := launcher.New().
 		Headless(true).
 		UserDataDir(r.cfg.ProfileDir).
-		Leakless(false)
+		Leakless(false).
+		Set("disable-dev-shm-usage").
+		Set("disable-gpu").
+		Set("no-first-run").
+		Set("no-default-browser-check")
 	if r.cfg.ChromiumPath != "" {
 		l = l.Bin(r.cfg.ChromiumPath)
 	}
