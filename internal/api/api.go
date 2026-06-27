@@ -189,7 +189,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"status": "ok"})
+	writeJSON(w, s.credentials.HealthInfo())
 }
 
 func (s *Server) verifyKey(r *http.Request) bool {

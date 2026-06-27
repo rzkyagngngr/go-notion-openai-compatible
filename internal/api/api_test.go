@@ -21,7 +21,7 @@ func testServer(t *testing.T) *Server {
 		ThreadStateDir: dir + "/threads",
 		BaseURL: config.DefaultBaseURL,
 	}
-	return NewServer(settings, credentials.NewStore(settings.SessionFile, settings.AccountPath))
+	return NewServer(settings, credentials.NewStore(settings.SessionFile, settings.AccountPath, nil))
 }
 
 func TestHealthz(t *testing.T) {
@@ -52,8 +52,8 @@ func TestHomePage(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "notion_browser_id") {
-		t.Fatal("home page missing notion_browser_id field")
+	if !strings.Contains(rec.Body.String(), "notionsync") {
+		t.Fatal("home page missing notionsync setup instructions")
 	}
 }
 

@@ -30,7 +30,7 @@ func TestMaskToken(t *testing.T) {
 func TestPersistAndLoad(t *testing.T) {
 	dir := t.TempDir()
 	sessionFile := filepath.Join(dir, "session.json")
-	store := NewStore(sessionFile, filepath.Join(dir, "account.json"))
+	store := NewStore(sessionFile, filepath.Join(dir, "account.json"), nil)
 
 	store.mu.Lock()
 	store.raw = SessionInput{NotionBrowserID: "br", TokenV2: "tok"}
@@ -42,7 +42,7 @@ func TestPersistAndLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	loaded := NewStore(sessionFile, filepath.Join(dir, "account.json"))
+	loaded := NewStore(sessionFile, filepath.Join(dir, "account.json"), nil)
 	st := loaded.Status()
 	if st.NotionBrowserID != "br" {
 		t.Fatalf("status: %+v", st)

@@ -1,15 +1,18 @@
 package credentials
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/mughu-id/notionchat/internal/account"
 	"github.com/mughu-id/notionchat/internal/bootstrap"
+	"github.com/mughu-id/notionchat/internal/browserrefresh"
 	"github.com/mughu-id/notionchat/internal/errors"
 	"github.com/mughu-id/notionchat/internal/models"
 )
@@ -26,46 +29,66 @@ type SessionInput struct {
 }
 
 type SessionStatus struct {
-	Connected       bool   `json:"connected"`
-	NotionBrowserID string `json:"notion_browser_id,omitempty"`
-	TokenV2Preview  string `json:"token_v2_preview,omitempty"`
-	UserName        string `json:"user_name,omitempty"`
-	UserEmail       string `json:"user_email,omitempty"`
-	SpaceName       string `json:"space_name,omitempty"`
-	SpaceID         string `json:"space_id,omitempty"`
-	ConnectedAt     string `json:"connected_at,omitempty"`
-	UpdatedAt       string `json:"updated_at,omitempty"`
+	Connected            bool   `json:"connected"`
+	NotionBrowserID      string `json:"notion_browser_id,omitempty"`
+	TokenV2Preview       string `json:"token_v2_preview,omitempty"`
+	UserName             string `json:"user_name,omitempty"`
+	UserEmail            string `json:"user_email,omitempty"`
+	SpaceName            string `json:"space_name,omitempty"`
+	SpaceID              string `json:"space_id,omitempty"`
+	ConnectedAt          string `json:"connected_at,omitempty"`
+	UpdatedAt            string `json:"updated_at,omitempty"`
+	BrowserMode          string `json:"browser_mode,omitempty"`
+	BrowserProfileReady  bool   `json:"browser_profile_ready"`
+	LastBrowserRefreshAt string `json:"last_browser_refresh_at,omitempty"`
+	CredentialSource     string `json:"credential_source,omitempty"`
 }
 
 type persistedSession struct {
-	NotionBrowserID string `json:"notion_browser_id"`
-	TokenV2         string `json:"token_v2"`
-	DeviceID        string `json:"device_id,omitempty"`
-	NotionUserID    string `json:"notion_user_id,omitempty"`
-	Cookie          string `json:"cookie,omitempty"`
-	SpaceName       string `json:"space_name,omitempty"`
-	ConnectedAt     string `json:"connected_at,omitempty"`
-	UpdatedAt       string `json:"updated_at,omitempty"`
+	NotionBrowserID      string `json:"notion_browser_id"`
+	TokenV2              string `json:"token_v2"`
+	DeviceID             string `json:"device_id,omitempty"`
+	NotionUserID         string `json:"notion_user_id,omitempty"`
+	Cookie               string `json:"cookie,omitempty"`
+	SpaceName            string `json:"space_name,omitempty"`
+	ConnectedAt          string `json:"connected_at,omitempty"`
+	UpdatedAt            string `json:"updated_at,omitempty"`
+	LastBrowserRefreshAt string `json:"last_browser_refresh_at,omitempty"`
+	LastProbeAt          string `json:"last_probe_at,omitempty"`
+	CredentialSource     string `json:"credential_source,omitempty"`
 }
 
 type Store struct {
-	mu          sync.RWMutex
-	account     *account.NotionAccount
-	sessionFile string
-	accountPath string
-	connectedAt string
-	updatedAt   string
-	raw         SessionInput
+	mu                    sync.RWMutex
+	account               *account.NotionAccount
+	sessionFile           string
+	accountPath           string
+	connectedAt           string
+	updatedAt             string
+	lastBrowserRefreshAt  string
+	lastProbeAt           string
+	credentialSource      string
+	raw                   SessionInput
+	refresher             browserrefresh.Refresher
+	browserCfg            browserrefresh.Config
 }
 
-func NewStore(sessionFile, accountPath string) *Store {
+func NewStore(sessionFile, accountPath string, refresher browserrefresh.Refresher) *Store {
 	if sessionFile == "" {
 		sessionFile = DefaultSessionFile
 	}
 	if accountPath == "" {
 		accountPath = "notion_account.json"
 	}
-	s := &Store{sessionFile: sessionFile, accountPath: accountPath}
+	if refresher == nil {
+		refresher = browserrefresh.NewRefresher(browserrefresh.LoadConfig())
+	}
+	s := &Store{
+		sessionFile: sessionFile,
+		accountPath: accountPath,
+		refresher:   refresher,
+		browserCfg:  browserrefresh.LoadConfig(),
+	}
 	s.loadFromDisk()
 	return s
 }
@@ -94,6 +117,9 @@ func (s *Store) loadFromDisk() {
 	s.raw = input
 	s.connectedAt = p.ConnectedAt
 	s.updatedAt = p.UpdatedAt
+	s.lastBrowserRefreshAt = p.LastBrowserRefreshAt
+	s.lastProbeAt = p.LastProbeAt
+	s.credentialSource = p.CredentialSource
 	s.mu.Unlock()
 
 	if acc, err := account.Load(s.accountPath); err == nil && acc.SpaceID != "" {
@@ -131,6 +157,7 @@ func (s *Store) Connect(input SessionInput) (*account.NotionAccount, error) {
 		s.connectedAt = now
 	}
 	s.updatedAt = now
+	s.credentialSource = "manual"
 	s.mu.Unlock()
 
 	if err := s.persist(); err != nil {
@@ -188,11 +215,14 @@ func (s *Store) Status() SessionStatus {
 	defer s.mu.RUnlock()
 
 	st := SessionStatus{
-		Connected:       s.account != nil && s.account.SpaceID != "",
-		NotionBrowserID: s.raw.NotionBrowserID,
-		TokenV2Preview:  maskToken(s.raw.TokenV2),
-		ConnectedAt:     s.connectedAt,
-		UpdatedAt:       s.updatedAt,
+		Connected:            s.account != nil && s.account.SpaceID != "",
+		NotionBrowserID:      s.raw.NotionBrowserID,
+		TokenV2Preview:       maskToken(s.raw.TokenV2),
+		ConnectedAt:          s.connectedAt,
+		UpdatedAt:            s.updatedAt,
+		LastBrowserRefreshAt: s.lastBrowserRefreshAt,
+		CredentialSource:     s.credentialSource,
+		BrowserMode:          s.refresher.Mode(),
 	}
 	if s.account != nil {
 		st.UserName = s.account.UserName
@@ -203,20 +233,30 @@ func (s *Store) Status() SessionStatus {
 			st.NotionBrowserID = s.account.BrowserID
 		}
 	}
+	if s.refresher.Enabled() {
+		spaceID := st.SpaceID
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ready, _ := s.refresher.Ready(ctx, spaceID)
+		cancel()
+		st.BrowserProfileReady = ready
+	}
 	return st
 }
 
 func (s *Store) persist() error {
 	s.mu.RLock()
 	p := persistedSession{
-		NotionBrowserID: s.raw.NotionBrowserID,
-		TokenV2:         s.raw.TokenV2,
-		DeviceID:        s.raw.DeviceID,
-		NotionUserID:    s.raw.NotionUserID,
-		Cookie:          s.raw.Cookie,
-		SpaceName:       s.raw.SpaceName,
-		ConnectedAt:     s.connectedAt,
-		UpdatedAt:       s.updatedAt,
+		NotionBrowserID:      s.raw.NotionBrowserID,
+		TokenV2:              s.raw.TokenV2,
+		DeviceID:             s.raw.DeviceID,
+		NotionUserID:         s.raw.NotionUserID,
+		Cookie:               s.raw.Cookie,
+		SpaceName:            s.raw.SpaceName,
+		ConnectedAt:          s.connectedAt,
+		UpdatedAt:            s.updatedAt,
+		LastBrowserRefreshAt: s.lastBrowserRefreshAt,
+		LastProbeAt:          s.lastProbeAt,
+		CredentialSource:     s.credentialSource,
 	}
 	s.mu.RUnlock()
 
@@ -290,6 +330,55 @@ func refreshAccountCookies(acc *account.NotionAccount, cookie string) *account.N
 		ClientVersion: acc.ClientVersion, UserAgent: acc.UserAgent,
 		Timezone: acc.Timezone, DefaultModel: acc.DefaultModel, Extras: acc.Extras,
 	}
+}
+
+func (s *Store) BrowserRefresher() browserrefresh.Refresher {
+	return s.refresher
+}
+
+func (s *Store) HealthInfo() map[string]any {
+	st := s.Status()
+	return map[string]any{
+		"status":                "ok",
+		"session_connected":     st.Connected,
+		"browser_mode":          st.BrowserMode,
+		"browser_profile_ready": st.BrowserProfileReady,
+		"credential_source":     st.CredentialSource,
+	}
+}
+
+func (s *Store) MarkProbeDone() {
+	s.mu.Lock()
+	s.lastProbeAt = time.Now().UTC().Format(time.RFC3339)
+	s.mu.Unlock()
+	_ = s.persist()
+}
+
+func (s *Store) ProbeDue() bool {
+	s.mu.RLock()
+	last := s.lastProbeAt
+	s.mu.RUnlock()
+	if last == "" {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339, last)
+	if err != nil {
+		return true
+	}
+	sec := probeMinIntervalSec()
+	return time.Since(t) >= time.Duration(sec)*time.Second
+}
+
+func probeMinIntervalSec() int {
+	raw := os.Getenv("NOTION_PROBE_MIN_INTERVAL_SEC")
+	if raw == "" {
+		return 600
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 60 {
+		return 600
+	}
+	return n
 }
 
 func maskToken(token string) string {

@@ -14,10 +14,10 @@ func (s *Store) StartBackgroundRefresh(stop <-chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	log.Printf("Credential auto-refresh every %s (NOTION_COOKIE / %s / Notion Set-Cookie)",
-		interval, injectFilePath())
+	log.Printf("Credential auto-refresh every %s (env / inject / HTTP / browser)",
+		interval)
 
-	run := func(reason string, probe bool) {
+	run := func(reason string, mustProbe bool) {
 		changed, err := s.RefreshAll()
 		if err != nil {
 			log.Printf("background refresh (%s): %v", reason, err)
@@ -25,17 +25,13 @@ func (s *Store) StartBackgroundRefresh(stop <-chan struct{}) {
 		}
 		if changed {
 			log.Printf("background refresh (%s): credentials updated", reason)
-			probe = true
 		}
-		if !probe {
-			return
-		}
-		acc, err := s.GetAccount()
-		if err != nil || acc == nil {
-			return
-		}
-		if !sessionrefresh.ProbeInference(acc) {
-			log.Printf("background refresh: inference probe failed — paste fresh token_v2 at / or data/inject_cookie.txt")
+		if mustProbe || s.ProbeDue() {
+			acc, err := s.GetAccount()
+			if err == nil && acc != nil && !sessionrefresh.ProbeInference(acc) {
+				log.Printf("background refresh: session stale — run notionsync from Windows or POST /api/session/browser-refresh")
+			}
+			s.MarkProbeDone()
 		}
 	}
 
@@ -60,11 +56,4 @@ func refreshInterval() time.Duration {
 		return 10 * time.Minute
 	}
 	return time.Duration(sec) * time.Second
-}
-
-func injectFilePath() string {
-	if p := os.Getenv("NOTION_COOKIE_FILE"); p != "" {
-		return p
-	}
-	return "data/inject_cookie.txt"
 }

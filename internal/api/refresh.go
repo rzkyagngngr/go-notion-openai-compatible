@@ -21,15 +21,14 @@ func (s *Server) completeWithAutoRefresh(
 	if !isStaleSessionError(err) {
 		return nil, c, err
 	}
-	refreshed, refreshErr := s.credentials.RefreshAll()
-	if refreshErr != nil {
+	if _, refreshErr := s.credentials.RefreshAll(); refreshErr != nil {
 		log.Printf("auto-refresh failed: %v", refreshErr)
 		return nil, c, err
 	}
-	if !refreshed {
+	if !s.credentials.SessionHealthy() {
 		return nil, c, err
 	}
-	log.Printf("auto-refresh: retrying chat after credential update")
+	log.Printf("auto-refresh: retrying chat after session recovery")
 	c2, clientErr := s.getClient()
 	if clientErr != nil {
 		return nil, c, err
@@ -51,13 +50,13 @@ func (s *Server) streamWithAutoRefresh(
 	if !isStaleSessionError(err) {
 		return nil, c, err
 	}
-	refreshed, refreshErr := s.credentials.RefreshAll()
-	if refreshErr != nil {
+	if _, refreshErr := s.credentials.RefreshAll(); refreshErr != nil {
 		return nil, c, err
 	}
-	if !refreshed {
+	if !s.credentials.SessionHealthy() {
 		return nil, c, err
 	}
+	log.Printf("auto-refresh: retrying stream after session recovery")
 	c2, clientErr := s.getClient()
 	if clientErr != nil {
 		return nil, c, err

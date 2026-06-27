@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/mughu-id/notionchat/internal/account"
@@ -34,6 +36,7 @@ const loginPageHTML = `<!DOCTYPE html>
   textarea { min-height:72px; font-family:Consolas,monospace; font-size:.82rem; resize:vertical; }
   button { width:100%; background:var(--accent); color:#fff; border:none; border-radius:8px; padding:13px; font-weight:600; cursor:pointer; font-size:.95rem; }
   button:hover { filter:brightness(1.08); }
+  button.secondary { background:transparent; border:1px solid var(--accent); color:var(--accent); margin-top:10px; }
   button.danger { background:transparent; border:1px solid var(--err); color:var(--err); margin-top:10px; }
   .hint { font-size:.78rem; color:var(--muted); margin:-8px 0 14px; line-height:1.4; }
   .status { padding:12px; border-radius:8px; margin-bottom:14px; font-size:.88rem; display:none; }
@@ -41,23 +44,19 @@ const loginPageHTML = `<!DOCTYPE html>
   .status.err { display:block; background:rgba(240,113,120,.12); color:var(--err); }
   .meta { font-size:.85rem; color:var(--muted); line-height:1.6; }
   .meta strong { color:var(--text); }
-  .tabs { display:flex; gap:8px; margin-bottom:16px; }
-  .tab { flex:1; padding:10px; text-align:center; border:1px solid var(--border); border-radius:8px; cursor:pointer; font-size:.85rem; color:var(--muted); }
-  .tab.active { border-color:var(--accent); color:var(--accent); background:rgba(91,141,239,.1); }
-  .panel { display:none; }
-  .panel.active { display:block; }
   .links { margin-top:20px; text-align:center; font-size:.82rem; }
   .links a, .links button.link { color:var(--accent); text-decoration:none; margin:0 8px; background:none; border:none; cursor:pointer; font-size:.82rem; padding:0; }
   code { background:#0e1118; padding:2px 6px; border-radius:4px; font-size:.8rem; }
   .models { margin-top:12px; font-size:.8rem; color:var(--muted); max-height:120px; overflow-y:auto; }
   .models span { display:inline-block; background:#0e1118; border:1px solid var(--border); border-radius:4px; padding:2px 8px; margin:3px 4px 0 0; color:var(--text); }
   .client-box { margin-top:12px; padding:12px; background:#0e1118; border-radius:8px; font-size:.8rem; line-height:1.7; }
+  pre.cmd { background:#0e1118; border:1px solid var(--border); border-radius:8px; padding:12px; font-size:.75rem; overflow-x:auto; white-space:pre-wrap; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="logo">NotionChat</div>
-  <p class="sub">Hubungkan sesi browser Notion Anda. Kredensial disimpan di memori server — <strong>tanpa .env</strong>, tanpa restart saat ganti akun.</p>
+  <p class="sub">Sesi Notion diperbarui otomatis. Seed pertama dari Chrome Windows via <code>notionsync</code> — tanpa copy-paste manual.</p>
 
   <div id="status" class="status"></div>
   <div id="connected-card" class="card connected" style="display:none">
@@ -65,40 +64,31 @@ const loginPageHTML = `<!DOCTYPE html>
     <div class="meta" id="connected-meta"></div>
     <div class="client-box" id="client-info"></div>
     <div class="models" id="models-list"></div>
+    <button type="button" class="secondary" id="browser-refresh">Recover session (browser)</button>
     <button type="button" class="danger" id="disconnect">Putuskan sesi</button>
   </div>
 
+  <div id="setup-card" class="card">
+    <span class="badge">Setup — notionsync (Windows)</span>
+    <p class="hint">Login notion.com di Chrome, lalu jalankan di PowerShell (sesi = HTTP cookie dari browser kamu):</p>
+    <pre class="cmd">chrome.exe --remote-debugging-port=9222
+go run ./cmd/notionsync --cdp http://127.0.0.1:9222 --url {{.ServerURL}} --space WORKSPACE_ID</pre>
+  </div>
+
+  {{if .DebugManualAuth}}
   <div id="login-card" class="card">
-    <span class="badge">Browser Session Login</span>
-    <p class="hint">Bukan OAuth resmi — ambil <code>token_v2</code> dan <code>notion_browser_id</code> dari cookie browser setelah login ke notion.com.</p>
-
-    <div class="tabs">
-      <div class="tab active" data-tab="fields">Token + Browser ID</div>
-      <div class="tab" data-tab="cookie">Paste Cookie</div>
-    </div>
-
+    <span class="badge">Debug manual auth</span>
     <form id="connect-form">
-      <div id="panel-fields" class="panel active">
-        <label>notion_browser_id</label>
-        <input name="notion_browser_id" placeholder="UUID dari DevTools → Cookies">
-        <label>token_v2</label>
-        <input name="token_v2" type="password" placeholder="v03%3A...">
-      </div>
-      <div id="panel-cookie" class="panel">
-        <label>document.cookie</label>
-        <textarea name="cookie" placeholder="notion_browser_id=...; token_v2=..."></textarea>
-      </div>
-      <label>Nama workspace (opsional, jika punya banyak)</label>
-      <input name="space_name" placeholder="My Workspace">
-      <button type="submit">Connect — tanpa restart server</button>
+      <label>notion_browser_id</label>
+      <input name="notion_browser_id" placeholder="UUID">
+      <label>token_v2</label>
+      <input name="token_v2" type="password" placeholder="v03%3A...">
+      <label>space_name (opsional)</label>
+      <input name="space_name" placeholder="Workspace">
+      <button type="submit">Connect</button>
     </form>
   </div>
-
-  <div class="card" style="margin-top:16px">
-    <span class="badge">Auto-inject dari browser</span>
-    <p class="hint">Drag bookmarklet ini ke bookmark bar. Klik saat tab Notion terbuka — token_v2 otomatis dikirim ke server ini tanpa copy-paste manual.</p>
-    <a id="inject-bookmarklet" class="hint" style="display:inline-block;padding:10px 14px;border:1px dashed var(--border);border-radius:8px;color:var(--accent);text-decoration:none;font-weight:600">⟳ Sync Notion Token</a>
-  </div>
+  {{end}}
 
   <div class="links">
     <a href="/healthz">Health</a>
@@ -108,31 +98,22 @@ const loginPageHTML = `<!DOCTYPE html>
 <script>
 const status = document.getElementById('status');
 const connectedCard = document.getElementById('connected-card');
-const loginCard = document.getElementById('login-card');
+const setupCard = document.getElementById('setup-card');
 const connectedMeta = document.getElementById('connected-meta');
+const apiKey = {{.APIKeyJSON}};
 
 function showStatus(msg, ok) {
   status.textContent = msg;
   status.className = 'status ' + (ok ? 'ok' : 'err');
 }
 
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
-  });
-});
-
 async function loadClientInfo() {
   const res = await fetch('/api/info');
   const info = await res.json();
   document.getElementById('client-info').innerHTML =
-    '<strong>Cursor / Postman setup:</strong><br>' +
+    '<strong>Cursor / Postman:</strong><br>' +
     'Base URL: <code>' + info.base_url + '</code><br>' +
-    'API Key: <code>' + info.api_key + '</code><br>' +
-    '<small>/v1/models butuh header <code>Authorization: Bearer ' + info.api_key + '</code></small>';
+    'API Key: <code>' + info.api_key + '</code>';
 }
 
 async function loadModels() {
@@ -140,7 +121,7 @@ async function loadModels() {
   const data = await res.json();
   const el = document.getElementById('models-list');
   if (!res.ok) {
-    el.textContent = data.message || data.error?.message || 'Gagal load models';
+    el.textContent = data.message || 'Gagal load models';
     return;
   }
   el.innerHTML = (data.data || []).map(m => '<span>' + m.id + '</span>').join('');
@@ -151,44 +132,51 @@ async function refreshStatus() {
   const data = await res.json();
   if (data.connected) {
     connectedCard.style.display = 'block';
-    loginCard.style.display = 'none';
+    if (setupCard) setupCard.style.display = 'none';
     connectedMeta.innerHTML =
       '<strong>' + (data.user_name || data.user_email || 'User') + '</strong><br>' +
       'Workspace: <strong>' + (data.space_name || '-') + '</strong><br>' +
-      'Browser ID: <code>' + (data.notion_browser_id || '-') + '</code><br>' +
+      'Source: <code>' + (data.credential_source || '-') + '</code><br>' +
+      'Browser: <code>' + (data.browser_mode || 'disabled') + '</code> ' +
+      (data.browser_profile_ready ? '(profile ready)' : '(profile empty)') + '<br>' +
       'Token: <code>' + (data.token_v2_preview || '••••') + '</code><br>' +
-      '<small>Terakhir update: ' + (data.updated_at || '-') + '</small>';
+      '<small>Updated: ' + (data.updated_at || '-') + '</small>';
     loadClientInfo();
     loadModels();
   } else {
     connectedCard.style.display = 'none';
-    loginCard.style.display = 'block';
+    if (setupCard) setupCard.style.display = 'block';
   }
 }
 
 document.getElementById('show-models').addEventListener('click', loadModels);
 
-(function() {
-  const apiKey = {{.APIKeyJSON}};
-  const injectURL = location.origin + '/api/session/inject';
-  const code = 'javascript:(async()=>{const c=document.cookie;const t=(c.match(/token_v2=([^;]+)/)||[])[1];if(!t){alert("token_v2 tidak ditemukan — login notion.com dulu");return}const r=await fetch(' + JSON.stringify(injectURL) + ',{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+' + JSON.stringify(apiKey) + '},body:JSON.stringify({cookie:c})});const j=await r.json();alert(r.ok?j.message||"Token synced":j.message||"Inject gagal")})()';
-  const el = document.getElementById('inject-bookmarklet');
-  if (el) { el.href = code; el.draggable = true; }
-})();
-
-document.getElementById('connect-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const fd = new FormData(e.target);
-  const body = Object.fromEntries(fd.entries());
-  const res = await fetch('/api/session', {
+document.getElementById('browser-refresh')?.addEventListener('click', async () => {
+  const res = await fetch('/api/session/browser-refresh', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    headers: { Authorization: 'Bearer ' + apiKey }
   });
   const data = await res.json();
-  showStatus(data.message || (res.ok ? 'Terhubung!' : 'Gagal'), res.ok);
-  if (res.ok) refreshStatus();
+  showStatus(data.message || (res.ok ? 'OK' : 'Gagal'), res.ok);
+  refreshStatus();
 });
+
+const form = document.getElementById('connect-form');
+if (form) {
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = Object.fromEntries(fd.entries());
+    const res = await fetch('/api/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    showStatus(data.message || (res.ok ? 'Terhubung' : 'Gagal'), res.ok);
+    if (res.ok) refreshStatus();
+  });
+}
 
 document.getElementById('disconnect').addEventListener('click', async () => {
   await fetch('/api/session', { method: 'DELETE' });
@@ -202,7 +190,9 @@ refreshStatus();
 </html>`
 
 type pageData struct {
-	APIKeyJSON string
+	APIKeyJSON       string
+	ServerURL        string
+	DebugManualAuth  bool
 }
 
 var pageTmpl = template.Must(template.New("login").Parse(loginPageHTML))
@@ -221,6 +211,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/session", h.handleSessionGet)
 	mux.HandleFunc("POST /api/session", h.handleSessionPost)
 	mux.HandleFunc("POST /api/session/refresh", h.handleSessionRefresh)
+	mux.HandleFunc("POST /api/session/browser-refresh", h.handleSessionBrowserRefresh)
 	mux.HandleFunc("POST /api/session/inject", h.handleSessionInject)
 	mux.HandleFunc("DELETE /api/session", h.handleSessionDelete)
 	mux.HandleFunc("/config", h.redirectHome)
@@ -230,7 +221,24 @@ func (h *Handler) Register(mux *http.ServeMux) {
 func (h *Handler) handleHome(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	keyJSON, _ := json.Marshal(h.settings.APIKey)
-	_ = pageTmpl.Execute(w, pageData{APIKeyJSON: string(keyJSON)})
+	host := h.settings.Host
+	if host == "0.0.0.0" {
+		host = "127.0.0.1"
+	}
+	serverURL := "http://" + host
+	if h.settings.Port != 80 && h.settings.Port != 443 {
+		serverURL += ":" + strconv.Itoa(h.settings.Port)
+	}
+	_ = pageTmpl.Execute(w, pageData{
+		APIKeyJSON:      string(keyJSON),
+		ServerURL:       serverURL,
+		DebugManualAuth: debugManualAuth(),
+	})
+}
+
+func debugManualAuth() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("NOTION_DEBUG_MANUAL_AUTH")))
+	return v == "1" || v == "true" || v == "yes"
 }
 
 func (h *Handler) redirectHome(w http.ResponseWriter, r *http.Request) {
@@ -253,8 +261,8 @@ func (h *Handler) handleSessionPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{
-		"ok": true,
-		"message": "Sesi Notion terhubung — langsung aktif tanpa restart.",
+		"ok":         true,
+		"message":    "Sesi Notion terhubung — langsung aktif tanpa restart.",
 		"space_name": acc.SpaceName,
 		"user_name":  acc.UserName,
 	})
@@ -268,7 +276,43 @@ func (h *Handler) handleSessionRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{
 		"ok": true, "refreshed": changed,
-		"message": "Credential sources reloaded (NOTION_COOKIE, inject file, Notion Set-Cookie)",
+		"message": "Credential chain refreshed (env / HTTP / browser)",
+	})
+}
+
+func (h *Handler) handleSessionBrowserRefresh(w http.ResponseWriter, r *http.Request) {
+	if !h.verifyInjectKey(r) {
+		writeError(w, "Missing or invalid API key", http.StatusUnauthorized)
+		return
+	}
+	changed, err := h.store.RefreshFromBrowser(true)
+	if err != nil {
+		if strings.Contains(err.Error(), "busy") {
+			writeJSONStatus(w, http.StatusGatewayTimeout, map[string]any{
+				"ok": false, "error": "browser_busy", "message": err.Error(),
+			})
+			return
+		}
+		writeError(w, err.Error(), errors.HTTPStatus(err))
+		return
+	}
+	st := h.store.Status()
+	probeOK := h.store.SessionHealthy()
+	msg := "Browser refresh complete"
+	if !st.BrowserProfileReady {
+		msg = "Browser profile not logged in — run notionsync from Windows (see docs/browser-login.md)"
+		writeJSONStatus(w, http.StatusUnprocessableEntity, map[string]any{
+			"ok": false, "refreshed": changed, "browser_profile_ready": false,
+			"probe_ok": probeOK, "message": msg,
+		})
+		return
+	}
+	writeJSON(w, map[string]any{
+		"ok": true, "refreshed": changed,
+		"browser_profile_ready": st.BrowserProfileReady,
+		"probe_ok":              probeOK,
+		"credential_source":     st.CredentialSource,
+		"message":               msg,
 	})
 }
 
@@ -327,8 +371,12 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, msg string, code int) {
+func writeJSONStatus(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "message": msg})
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, msg string, code int) {
+	writeJSONStatus(w, code, map[string]any{"ok": false, "message": msg})
 }

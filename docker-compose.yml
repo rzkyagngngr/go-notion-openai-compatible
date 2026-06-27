@@ -1,3 +1,4 @@
+# Single replica required — browser profile cannot be shared across containers.
 services:
   notionchat:
     build: .
@@ -11,8 +12,13 @@ services:
       NOTIONCHAT_API_KEY: "${NOTIONCHAT_API_KEY:-sk-notionchat}"
       NOTIONCHAT_CLIENT_OS: "windows"
       NOTION_COOKIE: "${NOTION_COOKIE:-}"
+      NOTION_ALLOW_INJECT_FILE: "${NOTION_ALLOW_INJECT_FILE:-true}"
       NOTION_COOKIE_FILE: "/app/data/inject_cookie.txt"
       NOTION_REFRESH_INTERVAL_SEC: "${NOTION_REFRESH_INTERVAL_SEC:-600}"
+      NOTION_BROWSER_MODE: "${NOTION_BROWSER_MODE:-headless}"
+      NOTION_BROWSER_PROFILE_DIR: "/app/data/browser-profile"
+      NOTION_BROWSER_CHROMIUM_PATH: "/usr/bin/chromium"
+      NOTION_BROWSER_NO_SANDBOX: "true"
     volumes:
       - notionchat-data:/app/data
       - notionchat-threads:/app/threads
