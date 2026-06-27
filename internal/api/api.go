@@ -384,7 +384,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := c.Complete(prompt, system, req.Model, threadID, latestUser, ideAgent, toolsActive, normalizedTools)
+	result, c, err := s.completeWithAutoRefresh(c, prompt, system, req.Model, threadID, latestUser, ideAgent, toolsActive, normalizedTools)
 	if err != nil {
 		writeNotionError(w, err)
 		return
@@ -449,7 +449,7 @@ func (s *Server) streamResponse(
 	defer close(done)
 	go streamKeepalive(w, flusher, done)
 
-	handle, err := c.StreamDeltas(prompt, system, req.Model, threadID, latestUser, ideAgent, toolsActive, normalizedTools)
+	handle, c, err := s.streamWithAutoRefresh(c, prompt, system, req.Model, threadID, latestUser, ideAgent, toolsActive, normalizedTools)
 	if err != nil {
 		errJSON, _ := json.Marshal(map[string]any{
 			"error": map[string]any{"message": err.Error(), "type": "notion_error", "code": errors.HTTPStatus(err)},

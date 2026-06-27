@@ -167,9 +167,13 @@ func emptyResponseMessage(result *ndjson.ParseResult, threadID string) string {
 		return "Notion returned no stream data. Check space_id and refresh your cookie via /config."
 	}
 	for _, sample := range result.SampleLines {
-		if strings.TrimSpace(sample) == "[]" {
-			return "Notion returned an empty inference stream. Reconnect at / — your cookie may be missing notion_user_id or token_v2 may have expired."
+		trimmed := strings.TrimSpace(sample)
+		if trimmed == "[]" || trimmed == "[" {
+			return "Notion session expired (empty inference stream). Paste a fresh token_v2 at / or set NOTION_COOKIE / data/inject_cookie.txt — auto-refresh will pick it up."
 		}
+	}
+	if result.LineCount == 1 && result.JSONFailures == 1 {
+		return "Notion session expired (token_v2 stale). Update cookie via / , NOTION_COOKIE env, or data/inject_cookie.txt."
 	}
 	events := make([]string, 0, len(result.EventTypeCounts))
 	for k, v := range result.EventTypeCounts {

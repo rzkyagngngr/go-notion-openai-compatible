@@ -17,6 +17,10 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", settings.Host, settings.Port)
 	server := api.NewServer(settings, creds)
 
+	stopRefresh := make(chan struct{})
+	defer close(stopRefresh)
+	go creds.StartBackgroundRefresh(stopRefresh)
+
 	log.Printf("NotionChat Go server starting on http://%s", addr)
 	log.Printf("Connect Notion session: http://%s/", addr)
 

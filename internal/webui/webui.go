@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
+	"strings"
 
+	"github.com/mughu-id/notionchat/internal/account"
 	"github.com/mughu-id/notionchat/internal/config"
 	"github.com/mughu-id/notionchat/internal/credentials"
 	"github.com/mughu-id/notionchat/internal/errors"
@@ -200,6 +202,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", h.handleHome)
 	mux.HandleFunc("GET /api/session", h.handleSessionGet)
 	mux.HandleFunc("POST /api/session", h.handleSessionPost)
+	mux.HandleFunc("POST /api/session/refresh", h.handleSessionRefresh)
+	mux.HandleFunc("POST /api/session/inject", h.handleSessionInject)
 	mux.HandleFunc("DELETE /api/session", h.handleSessionDelete)
 	mux.HandleFunc("/config", h.redirectHome)
 	mux.HandleFunc("/config/", h.redirectHome)
@@ -235,6 +239,60 @@ func (h *Handler) handleSessionPost(w http.ResponseWriter, r *http.Request) {
 		"space_name": acc.SpaceName,
 		"user_name":  acc.UserName,
 	})
+}
+
+func (h *Handler) handleSessionRefresh(w http.ResponseWriter, r *http.Request) {
+	changed, err := h.store.RefreshAll()
+	if err != nil {
+		writeError(w, err.Error(), errors.HTTPStatus(err))
+		return
+	}
+	writeJSON(w, map[string]any{
+		"ok": true, "refreshed": changed,
+		"message": "Credential sources reloaded (NOTION_COOKIE, inject file, Notion Set-Cookie)",
+	})
+}
+
+func (h *Handler) handleSessionInject(w http.ResponseWriter, r *http.Request) {
+	if !h.verifyInjectKey(r) {
+		writeError(w, "Missing or invalid API key", http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		Cookie  string `json:"cookie"`
+		TokenV2 string `json:"token_v2"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	cookie := strings.TrimSpace(body.Cookie)
+	if cookie == "" && body.TokenV2 != "" {
+		token := strings.TrimSpace(body.TokenV2)
+		if acc, err := h.store.GetAccount(); err == nil && acc != nil {
+			cookie = account.BuildCookieFromParts(acc.BrowserID, acc.DeviceID, acc.UserID, token)
+		} else {
+			st := h.store.Status()
+			cookie = account.BuildCookieFromParts(st.NotionBrowserID, "", "", token)
+		}
+	}
+	changed, err := h.store.ApplyInjectedCookie(cookie)
+	if err != nil {
+		writeError(w, err.Error(), errors.HTTPStatus(err))
+		return
+	}
+	writeJSON(w, map[string]any{
+		"ok": true, "updated": changed,
+		"message": "Cookie injected — active immediately, no restart",
+	})
+}
+
+func (h *Handler) verifyInjectKey(r *http.Request) bool {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == h.settings.APIKey
 }
 
 func (h *Handler) handleSessionDelete(w http.ResponseWriter, r *http.Request) {

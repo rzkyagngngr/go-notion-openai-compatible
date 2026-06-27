@@ -40,34 +40,40 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) PostJSON(url string, body map[string]any, headers map[string]string) (map[string]any, int, string, error) {
+	data, status, respBody, _, err := c.PostJSONWithCookies(url, body, headers)
+	return data, status, respBody, err
+}
+
+func (c *Client) PostJSONWithCookies(url string, body map[string]any, headers map[string]string) (map[string]any, int, string, []*http.Cookie, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
-		return nil, 0, "", err
+		return nil, 0, "", nil, err
 	}
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
-		return nil, 0, "", err
+		return nil, 0, "", nil, err
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, 0, "", err
+		return nil, 0, "", nil, err
 	}
 	defer resp.Body.Close()
+	setCookies := ParseSetCookieHeaders(resp.Header)
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, resp.StatusCode, "", err
+		return nil, resp.StatusCode, "", setCookies, err
 	}
 	if resp.StatusCode != 200 {
-		return nil, resp.StatusCode, string(respBody), nil
+		return nil, resp.StatusCode, string(respBody), setCookies, nil
 	}
 	var data map[string]any
 	if err := json.Unmarshal(respBody, &data); err != nil {
-		return nil, resp.StatusCode, string(respBody), err
+		return nil, resp.StatusCode, string(respBody), setCookies, err
 	}
-	return data, resp.StatusCode, string(respBody), nil
+	return data, resp.StatusCode, string(respBody), setCookies, nil
 }
 
 func (c *Client) PostStream(url string, body map[string]any, headers map[string]string) (io.ReadCloser, int, string, error) {
